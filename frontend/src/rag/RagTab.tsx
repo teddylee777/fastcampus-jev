@@ -76,11 +76,15 @@ function StepResult({ step }: { step: RagStep }) {
         <span className={`verdict ${tone}`}>{badgeOf(step, labels)}</span>
       </div>
       {step.threshold !== null && <p className="result-note">{`기준 ${step.threshold}`}</p>}
+      {step.kind === 'file' && (
+        <p className="result-note">폴더마다 따로 물은 probability 입니다. 폴더가 여럿이면 합이 1 을 넘습니다.</p>
+      )}
       <ProbabilityBars
         probabilities={step.probabilities}
         highlighted={step.selected}
         labels={labels}
-        maxBars={6}
+        maxBars={Object.keys(step.probabilities).length}
+        keepOrder={step.kind === 'file'}
       />
     </li>
   )

@@ -29,8 +29,8 @@ const STEP_DEFAULTS: Record<RagStepKind, RagStep> = {
     kind: 'file',
     verdict: FILE_KEY,
     selected: [FILE_KEY],
-    labels: { [FILE_KEY]: '배송비 안내' },
-    probabilities: { [FILE_KEY]: 0.88, none: 0.02 },
+    labels: { [FILE_KEY]: '배송비 안내', none__shipping: '해당 없음 (shipping)' },
+    probabilities: { [FILE_KEY]: 0.88, none__shipping: 0.02 },
     threshold: 0.2,
     latency_ms: 10,
     cost: 0.00001,
@@ -159,6 +159,65 @@ describe('RagTab', () => {
     ])
   })
 
+  it('should show every bar of a two-folder file step grouped by folder', async () => {
+    // 서버 순서: 폴더 이름순, 폴더 안에서는 파일 뒤에 그 폴더의 "해당 없음". 값은 일부러 정렬 순서와 다르게 둔다.
+    const fileKeys = [
+      'returns__refund_timeline',
+      'returns__return_window',
+      'none__returns',
+      'shipping__delivery_fee',
+      'shipping__delivery_time',
+      'shipping__international',
+      'none__shipping',
+    ]
+    const fileStep = makeStep('file', {
+      selected: ['returns__refund_timeline', 'shipping__delivery_fee'],
+      labels: {
+        returns__refund_timeline: '환불 시점',
+        returns__return_window: '반품 기간',
+        none__returns: '해당 없음 (returns)',
+        shipping__delivery_fee: '배송비 안내',
+        shipping__delivery_time: '배송 기간',
+        shipping__international: '해외 배송',
+        none__shipping: '해당 없음 (shipping)',
+      },
+      probabilities: Object.fromEntries(fileKeys.map((key, index) => [key, [0.1, 0.05, 0.02, 0.9, 0.3, 0.07, 0.01][index]])),
+    })
+    runGraphMock.mockResolvedValue(makeOutput({ steps: [makeStep('folder'), fileStep] }))
+    const user = userEvent.setup()
+    renderTab()
+
+    await submitQuery(user)
+    await screen.findByRole('region', { name: 'RAG 결과' })
+
+    const meters = within(itemOf('파일 선택')).getAllByRole('meter')
+    expect(meters.map((meter) => meter.getAttribute('aria-label'))).toEqual([
+      '환불 시점 probability',
+      '반품 기간 probability',
+      '해당 없음 (returns) probability',
+      '배송비 안내 probability',
+      '배송 기간 probability',
+      '해외 배송 probability',
+      '해당 없음 (shipping) probability',
+    ])
+    expect(screen.queryByText('none__returns')).not.toBeInTheDocument()
+    expect(screen.queryByText('none__shipping')).not.toBeInTheDocument()
+  })
+
+  it('should explain that file probabilities are asked per folder', async () => {
+    runGraphMock.mockResolvedValue(makeOutput())
+    const user = userEvent.setup()
+    renderTab()
+
+    await submitQuery(user)
+    await screen.findByRole('region', { name: 'RAG 결과' })
+
+    const note = '폴더마다 따로 물은 probability 입니다.'
+    expect(within(itemOf('파일 선택')).getByText(new RegExp(note))).toBeInTheDocument()
+    expect(within(itemOf('폴더 선택')).queryByText(new RegExp(note))).not.toBeInTheDocument()
+    expect(screen.getAllByText(new RegExp(note))).toHaveLength(1)
+  })
+
   it('should show verdict badges with Korean labels', async () => {
     runGraphMock.mockResolvedValue(makeOutput())
     const user = userEvent.setup()
@@ -258,6 +317,30 @@ describe('RagTab', () => {
     expect(screen.getByRole('status')).toHaveTextContent(reason)
     expect(screen.queryByRole('heading', { level: 3, name: '답변' })).not.toBeInTheDocument()
     expect(screen.getAllByRole('heading', { level: 3 }).map((heading) => heading.textContent)).toEqual(headings)
+  })
+
+  it('should show the per-folder not-applicable bar when no file matched', async () => {
+    runGraphMock.mockResolvedValue(
+      makeOutput({
+        status: 'no_file',
+        steps: [makeStep('folder'), makeStep('file', { verdict: 'none', selected: [] })],
+        files: [],
+        passages: [],
+        answer: null,
+        grounding: null,
+      }),
+    )
+    const user = userEvent.setup()
+    renderTab()
+
+    await submitQuery(user)
+    await screen.findByRole('region', { name: 'RAG 결과' })
+
+    expect(within(itemOf('파일 선택')).getByRole('meter', { name: '해당 없음 (shipping) probability' })).toHaveAttribute(
+      'aria-valuenow',
+      '2',
+    )
+    expect(badgeOf('파일 선택')).toBe('해당 없음')
   })
 
   it('should show a none bar and the not-applicable badge when no folder matched', async () => {

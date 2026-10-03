@@ -18,8 +18,8 @@ const answered: RagOutput = {
       kind: 'file',
       verdict: 'shipping/delivery_fee.md',
       selected: ['shipping/delivery_fee.md'],
-      labels: { 'shipping/delivery_fee.md': '배송비 안내' },
-      probabilities: { 'shipping/delivery_fee.md': 0.88, none: 0.02 },
+      labels: { 'shipping/delivery_fee.md': '배송비 안내', none__shipping: '해당 없음 (shipping)' },
+      probabilities: { 'shipping/delivery_fee.md': 0.88, none__shipping: 0.02 },
       threshold: 0.2,
       latency_ms: 190,
       cost: 0.00001,
@@ -60,6 +60,27 @@ describe('isRagStatus', () => {
 describe('isRagOutput', () => {
   it('should accept a complete output', () => {
     expect(isRagOutput(answered)).toBe(true)
+  })
+
+  it('should accept a file step that spans several folder questions', () => {
+    const fileStep = {
+      ...answered.steps[1],
+      selected: ['returns__refund_timeline', 'membership__points'],
+      labels: {
+        returns__refund_timeline: '환불 시점',
+        none__returns: '해당 없음 (returns)',
+        membership__points: '적립금',
+        none__membership: '해당 없음 (membership)',
+      },
+      probabilities: {
+        membership__points: 0.9,
+        none__membership: 0.03,
+        returns__refund_timeline: 0.8,
+        none__returns: 0.05,
+      },
+    }
+
+    expect(isRagOutput({ ...answered, steps: [answered.steps[0], fileStep] })).toBe(true)
   })
 
   it('should accept a stopped output with null answer and grounding', () => {
