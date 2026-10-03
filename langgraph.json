@@ -6,7 +6,8 @@
     "compaction": "./jev_agent/pattern_graphs.py:make_compaction",
     "tool_gate": "./jev_agent/pattern_graphs.py:make_tool_gate",
     "routing": "./jev_agent/pattern_graphs.py:make_routing",
-    "browser_action": "./jev_agent/pattern_graphs.py:make_browser_action"
+    "browser_action": "./jev_agent/pattern_graphs.py:make_browser_action",
+    "doc_rag": "./jev_agent/rag/graph.py:make_doc_rag"
   },
   "env": ".env"
 }
