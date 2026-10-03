@@ -48,9 +48,16 @@ const STEP_TITLES: Record<RagStepKind, string> = {
   grounding: '근거 검증',
 }
 
-function describeStatus(status: string): string {
+// 충분성 단계를 통과했는데도 insufficient 로 끝난 경우: LLM 이 근거 구절로 답하지 않고 거절한 것이다.
+const LLM_DECLINED_REASON = 'Jev 는 찾은 구절이 충분하다고 판단했지만, LLM 이 그 구절로는 답하지 못한다고 답했습니다.'
+
+function describeStatus(output: RagOutput): string {
+  const { status } = output
   if (!isRagStatus(status)) return `알 수 없는 상태입니다: ${status}`
-  return status === 'answered' ? '답변을 만들었습니다.' : STOP_REASONS[status]
+  if (status === 'answered') return '답변을 만들었습니다.'
+  const passedSufficiency = output.steps.some((step) => step.kind === 'sufficiency' && step.selected.length > 0)
+  if (status === 'insufficient' && passedSufficiency) return LLM_DECLINED_REASON
+  return STOP_REASONS[status]
 }
 
 function toneOf(step: RagStep): Tone {
@@ -163,7 +170,7 @@ export function RagTab() {
 
   let statusMessage: string | null = null
   if (mutation.isPending) statusMessage = '문서에서 찾는 중입니다.'
-  else if (mutation.isSuccess) statusMessage = describeStatus(mutation.data.status)
+  else if (mutation.isSuccess) statusMessage = describeStatus(mutation.data)
 
   return (
     <div className="pattern">

@@ -87,6 +87,29 @@ describe('isRagOutput', () => {
     expect(isRagOutput({ ...answered, status: 'no_file', answer: null, grounding: null })).toBe(true)
   })
 
+  it('should accept the refusal-shaped output where sufficiency passed but the run stopped', () => {
+    const sufficiencyStep = {
+      kind: 'sufficiency',
+      verdict: 'sufficient',
+      selected: ['sufficient'],
+      labels: {},
+      probabilities: { sufficient: 0.82 },
+      threshold: 0.5,
+      latency_ms: 150,
+      cost: 0.00001,
+    }
+
+    expect(
+      isRagOutput({
+        ...answered,
+        status: 'insufficient',
+        steps: [...answered.steps.slice(0, 2), sufficiencyStep],
+        answer: null,
+        grounding: null,
+      }),
+    ).toBe(true)
+  })
+
   it('should accept an unknown status string', () => {
     expect(isRagOutput({ ...answered, status: 'weird' })).toBe(true)
   })

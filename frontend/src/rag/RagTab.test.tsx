@@ -319,6 +319,28 @@ describe('RagTab', () => {
     expect(screen.getAllByRole('heading', { level: 3 }).map((heading) => heading.textContent)).toEqual(headings)
   })
 
+  it('should say the LLM declined when Jev judged the passages sufficient but the run still ended insufficient', async () => {
+    runGraphMock.mockResolvedValue(
+      makeOutput({
+        status: 'insufficient',
+        steps: [makeStep('folder'), makeStep('file'), makeStep('sufficiency')],
+        answer: null,
+        grounding: null,
+      }),
+    )
+    const user = userEvent.setup()
+    renderTab()
+
+    await submitQuery(user)
+    await screen.findByRole('region', { name: 'RAG 결과' })
+
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'Jev 는 찾은 구절이 충분하다고 판단했지만, LLM 이 그 구절로는 답하지 못한다고 답했습니다.',
+    )
+    expect(screen.getByRole('status')).not.toHaveTextContent('찾은 구절만으로는 답할 수 없다고 판단했습니다.')
+    expect(badgeOf('충분성')).toBe('충분함')
+  })
+
   it('should show the per-folder not-applicable bar when no file matched', async () => {
     runGraphMock.mockResolvedValue(
       makeOutput({
