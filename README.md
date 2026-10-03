@@ -5,7 +5,7 @@
 **판단은 Jev 에게, 말은 LLM 에게**
 
 판단 전용 모델 Jev 를 DeepAgents(LangGraph) 에이전트에 붙여<br/>
-도구 선택, 가드레일, 위험 작업 게이트로 쓰는 방법을 노트북 12개와 샘플 앱으로 배웁니다.
+도구 선택, 가드레일, 위험 작업 게이트로 쓰는 방법을 노트북 13개와 샘플 앱으로 배웁니다.
 
 ![Python](https://img.shields.io/badge/python-3.12+-blue)
 ![LangGraph](https://img.shields.io/badge/LangGraph-informational)
@@ -28,11 +28,12 @@ Jev 는 TypeSafe 가 2026년 9월에 공개한 판단 전용 모델입니다. �
 - **가드레일**: 인젝션, 욕설, 비방, 개인정보를 Jev 호출 한 번으로 판정합니다. 도구 결과에 숨은 지시문도 검사합니다.
 - **위험 작업 게이트**: 주문 취소와 환불은 실행 전에 "사용자가 직접 요청했는가"를 묻고, 애매하면 사람에게 넘깁니다.
 - **오픈소스 패턴 4종**: 메모리 압축, 도구 게이트와 출력 판정, 검색·모델 라우팅, 브라우저 액션 선택을 같은 방식으로 구현했습니다.
+- **문서 RAG**: Jev 가 폴더와 파일을 고르고, grep 이 구절을 찾고, Jev 가 답해도 되는지와 답이 구절에 근거하는지를 판정합니다. 답변 문장만 LLM 이 씁니다.
 - **눈으로 보는 판단**: 샘플 앱이 Jev 의 판단마다 확률 막대를 보여 줍니다.
 
 ## 빠른 시작 (Quick Start)
 
-준비물은 Python 3.12, [uv](https://docs.astral.sh/uv/), Node.js 20 이상, 그리고 [OpenRouter API 키](https://openrouter.ai/settings/keys)입니다. Jev 는 선불 크레딧이 있는 계정에서만 호출됩니다.
+준비물은 Python 3.12, [uv](https://docs.astral.sh/uv/), Node.js 24.x(24.15 이상) 또는 22.22.2 이상의 22.x, 그리고 [OpenRouter API 키](https://openrouter.ai/settings/keys)입니다. Jev 는 선불 크레딧이 있는 계정에서만 호출됩니다.
 
 ### 1. 저장소 클론과 설치
 
@@ -69,7 +70,7 @@ npm run dev
 
 ### 3. 확인
 
-브라우저에서 <http://localhost:5173> 을 엽니다. 왼쪽 메뉴에 탭 여섯 개가 보이면 준비가 끝난 것입니다. 고객지원 에이전트 탭 첫 화면의 예시 카드 "배송 조회"를 누르면 Jev 가 `track_shipping` 도구를 고르는 확률과 답변이 함께 나옵니다.
+브라우저에서 <http://localhost:5173> 을 엽니다. 왼쪽 메뉴에 탭 일곱 개가 보이면 준비가 끝난 것입니다. 고객지원 에이전트 탭 첫 화면의 예시 카드 "배송 조회"를 누르면 Jev 가 `track_shipping` 도구를 고르는 확률과 답변이 함께 나옵니다.
 
 노트북으로 시작하려면 다음 명령을 씁니다. VS Code 에서는 `.venv` 커널을 선택합니다.
 
@@ -99,6 +100,7 @@ uv run python -m jupyterlab notebooks
 | 도구 게이트 | 명령과 출력을 넣어 위험과 실패 유형 판정 | 08 |
 | 검색·모델 라우팅 | 질의를 넣어 소스, 기간, 모델, 관련도 판정 | 09 |
 | 브라우저 액션 | 단계 목표와 화면 요소로 다음 조작 판정 | 10 |
+| 문서 RAG | 질의를 넣으면 폴더와 파일 선택, 찾은 구절, 충분성, 답변, 근거 검증을 단계별로 표시. Jev 의 probability 는 실행마다 조금씩 달라 같은 예시도 결과가 달라질 수 있음 | 12 |
 
 패턴 탭은 예시를 고르고 글자를 고친 뒤 "Jev 에 묻기"를 누르면 됩니다. Jev 호출은 서버에서만 일어나고 API 키는 브라우저로 나가지 않습니다.
 
@@ -185,6 +187,12 @@ flowchart TD
 
 NanoJev, open-alternative-jev, Reticle 은 10번 끝에서 소개만 합니다. 앞의 둘은 로컬 모델 가중치가 필요하고, Reticle 은 Jev 연동이 아직 계획 단계입니다.
 
+**RAG편: 문서를 찾아 답하기**
+
+| 번호 | 주제 | 내용 |
+|---|---|---|
+| 12 | 문서 RAG | 임베딩 없이 폴더, 파일, 구절 순서로 찾음. 폴더와 파일 선택은 Choice, 답해도 되는지는 Noul, 답이 구절에 근거하는지는 Choice 로 Jev 가 판정하고 grep 이 구절을 찾고 LLM 이 답변을 씀. 질의 3개를 3번씩 9회 돌려 모두 기대와 일치(시작값은 폴더 0.25, 파일 0.2, 충분성 0.5). 환불 질의는 returns 0.50~0.57, membership 0.41~0.48 로 두 폴더를 함께 고르고, 문서에 없는 질의는 `none` 0.99 로 `no_folder` 에서 멈춤 |
+
 노트북은 `scripts/build_notebooks.py` 에서 생성합니다. 내용을 고칠 때는 이 파일을 수정한 뒤 다시 생성하고 실행합니다.
 
 ```bash
@@ -197,7 +205,7 @@ uv run python scripts/sync_notebook_markdown.py 11  # 설명 글만 고쳤을 �
 ## 프로젝트 구조
 
 ```
-notebooks/        노트북 12개 (아래 목차)
+notebooks/        노트북 13개 (아래 목차)
 jev_agent/        노트북과 서버가 함께 쓰는 공용 모듈
   jev.py            Jev Decisions API 클라이언트
   tools.py          샘플 쇼핑몰 '테디마켓' 도구 10개
@@ -209,9 +217,10 @@ jev_agent/        노트북과 서버가 함께 쓰는 공용 모듈
   evalset.py        도구 선택 평가용 라벨 데이터 30건
   patterns/         오픈소스에서 가져온 패턴 4종 (압축, 게이트, 라우팅, 브라우저 액션)
   pattern_graphs.py 패턴을 LangGraph 그래프로 감싸 앱 탭에 제공
-frontend/         React(Vite) 앱: 채팅 탭 + 가드레일 비교 탭 + 패턴 탭 4개
+  rag/              문서 RAG: documents/ 문서 묶음, grep 검색기, Jev 판단, RAG 그래프 (doc_rag)
+frontend/         React(Vite) 앱: 채팅 탭 + 가드레일 비교 탭 + 패턴 탭 4개 + 문서 RAG 탭
   scripts/          화면 캡처와 구간별 시간 측정 스크립트 (Playwright)
-langgraph.json    LangGraph 서버 설정 (그래프 6개)
+langgraph.json    LangGraph 서버 설정 (그래프 7개)
 scripts/          노트북 생성과 실행 스크립트
 tests/            가짜 Jev, 가짜 LLM 으로 도는 단위 테스트
 LICENSE           MIT
@@ -221,11 +230,11 @@ LICENSE           MIT
 
 ```bash
 # 백엔드: 네트워크 없이 가짜 Jev 와 가짜 LLM 으로 분기 검증
-uv run pytest tests/test_jev_agent.py tests/test_patterns.py -q --timeout=10
+uv run pytest tests/test_jev_agent.py tests/test_patterns.py tests/test_rag_retriever.py tests/test_rag_graph.py -q --timeout=10
 
-# 프론트엔드: 도구 호출 묶기, 마크다운 표시, 탭 전환
+# 프론트엔드: 도구 호출 묶기, 마크다운 표시, 탭 전환, 문서 RAG 탭
 cd frontend
-npx vitest run src/chat/timeline.test.ts src/App.test.tsx
+npx vitest run src/chat/timeline.test.ts src/App.test.tsx src/rag/types.test.ts src/rag/RagTab.test.tsx src/lib/langgraph.test.ts
 ```
 
 두 서버를 띄운 상태에서는 헤드리스 브라우저로 각 탭을 열어 화면을 캡처하고 시간을 잴 수 있습니다. `frontend` 디렉터리에서 실행합니다.
@@ -236,6 +245,8 @@ node scripts/screenshots.mjs ./screenshots
 node scripts/guardrail-shots.mjs ./screenshots   # 가드레일 비교 탭과 가드레일 채팅 예시
 node scripts/timing.mjs                         # 채팅 한 턴의 구간별 시간 측정
 ```
+
+PR 과 `main` push 에서는 GitHub Actions 가 ruff, pytest, 타입 검사, vitest, oxlint 를 실제 API 없이 돌립니다.
 
 ## 참고 자료
 
