@@ -14,11 +14,14 @@ from jev_agent.rag.decisions import (
     MAX_PASSAGE_CHARS,
     NONE_OPTION,
     REFUSAL_ANSWER,
-    build_file_question,
+    build_file_labels,
+    build_file_questions,
     build_folder_question,
     build_step,
+    flatten_file_probabilities,
     format_passages,
     is_refusal,
+    merge_file_selections,
     read_answer,
     read_grounding,
     read_noul,
@@ -93,20 +96,134 @@ def test_build_questions_order_options_by_name_with_none_last(reverse):
     folders = ["returns", "shipping"]
     files = [("returns", "refund"), ("shipping", "fee"), ("shipping", "time")]
     index = make_index(folders[::-1] if reverse else folders, files[::-1] if reverse else files)
+    asked_folders = ["returns", "shipping"][:: -1 if reverse else 1]
 
     folder_state, folder_questions = build_folder_question(index, "질의")
-    file_state, file_questions = build_file_question(index, ["shipping", "returns"], "질의")
+    file_state, file_questions = build_file_questions(index, asked_folders, "질의")
 
     assert folder_state == {"query": "질의"}
     assert list(folder_questions["folder"]["criteria"]) == ["returns", "shipping", NONE_OPTION]
     assert file_state == {"query": "질의"}
-    assert list(file_questions["file"]["criteria"]) == [
-        "returns__refund",
+    assert list(file_questions) == ["files__returns", "files__shipping"]
+    assert list(file_questions["files__returns"]["criteria"]) == ["returns__refund", NONE_OPTION]
+    assert list(file_questions["files__shipping"]["criteria"]) == [
         "shipping__fee",
         "shipping__time",
         NONE_OPTION,
     ]
-    assert file_questions["file"]["criteria"]["shipping__fee"] == "fee 제목: fee 요약"
+    assert file_questions["files__shipping"]["criteria"]["shipping__fee"] == "fee 제목: fee 요약"
+
+
+# --- per-folder file selection ----------------------------------------------------
+@pytest.mark.parametrize(
+    ("refund", "returns_none"),
+    [(0.1, 0.6), (FILE_THRESHOLD + 0.1, FILE_THRESHOLD + 0.1)],
+    ids=["none_on_top", "none_tied_for_top"],
+)
+def test_merge_file_selections_skips_folder_whose_none_is_top_or_tied(refund, returns_none):
+    probabilities_by_folder = {
+        "returns": {"returns__refund": refund, NONE_OPTION: returns_none},
+        "shipping": {"shipping__fee": FILE_THRESHOLD + 0.1, NONE_OPTION: 0.0},
+    }
+
+    assert merge_file_selections(probabilities_by_folder) == ["shipping__fee"]
+
+
+@pytest.mark.parametrize(
+    "probabilities_by_folder",
+    [
+        {
+            "returns": {"returns__refund": 0.1, NONE_OPTION: 0.9},
+            "shipping": {"shipping__fee": 0.2, NONE_OPTION: 0.8},
+        },
+        {
+            "returns": {"returns__refund": 0.1, NONE_OPTION: 0.9},
+            "shipping": {
+                "shipping__fee": FILE_THRESHOLD - 0.01,
+                "shipping__time": FILE_THRESHOLD - 0.01,
+                NONE_OPTION: 0.0,
+            },
+        },
+    ],
+    ids=["both_none_on_top", "one_none_on_top_other_below_threshold"],
+)
+def test_merge_file_selections_without_candidate_returns_empty(probabilities_by_folder):
+    assert merge_file_selections(probabilities_by_folder) == []
+
+
+def test_merge_file_selections_orders_by_probability_then_key_and_caps_at_max_files():
+    same = FILE_THRESHOLD + 0.2
+    probabilities_by_folder = {
+        "shipping": {"shipping__time": same, "shipping__fee": FILE_THRESHOLD, NONE_OPTION: 0.0},
+        "returns": {"returns__refund": same, "returns__exchange": FILE_THRESHOLD + 0.1},
+    }
+
+    selected = merge_file_selections(probabilities_by_folder)
+
+    assert selected == ["returns__refund", "shipping__time", "returns__exchange"]
+    assert len(selected) == MAX_FILES
+    assert "shipping__fee" not in selected
+
+
+def test_merge_file_selections_ignores_folder_and_option_order():
+    forward = {
+        "returns": {"returns__refund": 0.5, "returns__exchange": 0.3, NONE_OPTION: 0.2},
+        "shipping": {"shipping__fee": 0.5, "shipping__time": 0.3, NONE_OPTION: 0.2},
+    }
+    backward = {
+        folder: dict(reversed(list(options.items())))
+        for folder, options in reversed(list(forward.items()))
+    }
+
+    assert merge_file_selections(forward) == merge_file_selections(backward)
+    assert merge_file_selections(forward) == [
+        "returns__refund",
+        "shipping__fee",
+        "returns__exchange",
+    ]
+
+
+def test_flatten_file_probabilities_renames_none_per_folder():
+    probabilities_by_folder = {
+        "shipping": {"shipping__time": 0.3, "shipping__fee": 0.6, NONE_OPTION: 0.1},
+        "returns": {"returns__refund": 0.7, NONE_OPTION: 0.3},
+    }
+
+    flat = flatten_file_probabilities(probabilities_by_folder)
+
+    assert list(flat) == [
+        "returns__refund",
+        "none__returns",
+        "shipping__fee",
+        "shipping__time",
+        "none__shipping",
+    ]
+    assert flat["none__returns"] == 0.3
+    assert flat["shipping__fee"] == 0.6
+    assert NONE_OPTION not in flat
+
+
+def test_flatten_file_probabilities_omits_none_key_when_folder_has_no_none_value():
+    flat = flatten_file_probabilities({"returns": {"returns__refund": 1.0}})
+
+    assert flat == {"returns__refund": 1.0}
+
+
+def test_build_file_labels_covers_every_flat_key():
+    index = make_index(
+        ["returns", "shipping"], [("returns", "refund"), ("shipping", "fee"), ("shipping", "time")]
+    )
+    probabilities_by_folder = {
+        "returns": {"returns__refund": 0.7, NONE_OPTION: 0.3},
+        "shipping": {"shipping__fee": 0.6, "shipping__time": 0.3, NONE_OPTION: 0.1},
+    }
+
+    labels = build_file_labels(index, ["shipping", "returns"])
+
+    assert set(labels) == set(flatten_file_probabilities(probabilities_by_folder))
+    assert labels["shipping__fee"] == "fee 제목"
+    assert labels["none__shipping"] == "해당 없음 (shipping)"
+    assert labels["none__returns"] == "해당 없음 (returns)"
 
 
 # --- readers ----------------------------------------------------------------------

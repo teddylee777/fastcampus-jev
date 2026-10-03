@@ -15,6 +15,8 @@ from jev_agent.rag.retriever import Passage
 
 NONE_OPTION = "none"  # jev_agent/patterns/actions.py 의 NO_TARGET 과 같은 '해당 없음' 키
 NONE_DESCRIPTION = "해당 없음. 위 보기 중 이 질의에 맞는 것이 없다."
+FILE_QUESTION_PREFIX = "files__"  # 폴더별 파일 질문 이름: files__{folder}
+NONE_FILE_PREFIX = "none__"  # 펼친 file step 에서 폴더별 '해당 없음' 키: none__{folder}
 # 아래 기준값은 시작값이다. 12번 노트북을 실제로 실행한 뒤에만 조정한다.
 FOLDER_THRESHOLD, MAX_FOLDERS = 0.25, 2
 FILE_THRESHOLD, MAX_FILES = 0.2, 3
@@ -64,15 +66,31 @@ def build_folder_question(index: CorpusIndex, query: str) -> Question:
     return {"query": query}, {"folder": choice(FOLDER_INSTRUCTIONS, options)}
 
 
-def build_file_question(index: CorpusIndex, folders: list[str], query: str) -> Question:
-    options = _with_none_option(
-        {
-            entry["key"]: f"{entry['title']}: {entry['summary']}"
-            for entry in index["files"]
-            if entry["folder"] in folders
-        }
-    )
-    return {"query": query}, {"file": choice(FILE_INSTRUCTIONS, options)}
+def file_question_name(folder: str) -> str:
+    return f"{FILE_QUESTION_PREFIX}{folder}"
+
+
+def none_key(folder: str) -> str:
+    """파일 막대 하나로 펼친 맵에서 폴더별 '해당 없음' 을 구분하는 키."""
+    return f"{NONE_FILE_PREFIX}{folder}"
+
+
+def build_file_questions(index: CorpusIndex, folders: list[str], query: str) -> Question:
+    """선택된 폴더마다 파일 질문을 하나씩 만든다. 폴더 안의 파일끼리만 probability 를 나눈다."""
+    questions = {
+        file_question_name(folder): choice(
+            FILE_INSTRUCTIONS,
+            _with_none_option(
+                {
+                    entry["key"]: f"{entry['title']}: {entry['summary']}"
+                    for entry in index["files"]
+                    if entry["folder"] == folder
+                }
+            ),
+        )
+        for folder in sorted(folders)
+    }
+    return {"query": query}, questions
 
 
 def build_sufficiency_question(query: str, passages: list[Passage]) -> Question:
@@ -151,6 +169,46 @@ def select_labels(probabilities: dict[str, float], threshold: float, limit: int)
     if not ranked or ranked[0][0] == NONE_OPTION:
         return []
     return [key for key, value in ranked if key != NONE_OPTION and value >= threshold][:limit]
+
+
+def merge_file_selections(probabilities_by_folder: dict[str, dict[str, float]]) -> list[str]:
+    """폴더별 후보를 모아 probability 내림차순(같으면 키 순)으로 MAX_FILES 개를 고른다.
+
+    폴더 안에서 '해당 없음' 이 1등이거나 동점이면 그 폴더는 후보를 내지 않는다.
+    """
+    candidates = {
+        key: probabilities[key]
+        for probabilities in probabilities_by_folder.values()
+        for key in select_labels(probabilities, FILE_THRESHOLD, MAX_FILES)
+    }
+    return sorted(candidates, key=lambda key: (-candidates[key], key))[:MAX_FILES]
+
+
+def flatten_file_probabilities(
+    probabilities_by_folder: dict[str, dict[str, float]],
+) -> dict[str, float]:
+    """폴더 이름순으로 한 맵으로 편다. 값은 각 폴더 질문 안의 probability 그대로이고, 폴더의
+    '해당 없음' 은 none_key 이름으로 그 폴더의 마지막에 둔다(그래서 맵 전체의 합은 1 이 아니다)."""
+    flat: dict[str, float] = {}
+    for folder in sorted(probabilities_by_folder):
+        probabilities = probabilities_by_folder[folder]
+        flat.update(
+            {key: probabilities[key] for key in sorted(probabilities) if key != NONE_OPTION}
+        )
+        if NONE_OPTION in probabilities:
+            flat[none_key(folder)] = probabilities[NONE_OPTION]
+    return flat
+
+
+def build_file_labels(index: CorpusIndex, folders: list[str]) -> dict[str, str]:
+    """펼친 file step 의 막대 라벨: 파일은 제목, 폴더별 '해당 없음' 은 폴더 이름을 붙여 보인다."""
+    labels: dict[str, str] = {}
+    for folder in sorted(folders):
+        labels.update(
+            {entry["key"]: entry["title"] for entry in index["files"] if entry["folder"] == folder}
+        )
+        labels[none_key(folder)] = f"해당 없음 ({folder})"
+    return labels
 
 
 def _finite_float(value: Any) -> float | None:

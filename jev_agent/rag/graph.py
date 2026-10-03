@@ -22,18 +22,21 @@ from jev_agent.rag.corpus import DOCUMENTS_ROOT, CorpusIndex, load_corpus_index
 from jev_agent.rag.decisions import (
     FILE_THRESHOLD,
     FOLDER_THRESHOLD,
-    MAX_FILES,
     MAX_FOLDERS,
     NONE_OPTION,
     REFUSAL_ANSWER,
     SUFFICIENCY_THRESHOLD,
-    build_file_question,
+    build_file_labels,
+    build_file_questions,
     build_folder_question,
     build_grounding_question,
     build_step,
     build_sufficiency_question,
+    file_question_name,
+    flatten_file_probabilities,
     format_passages,
     is_refusal,
+    merge_file_selections,
     read_answer,
     read_grounding,
     read_noul,
@@ -142,20 +145,26 @@ def build_select_files_node(deps: RagDeps):
     path_by_key = {entry["key"]: entry["path"] for entry in deps.index["files"]}
 
     async def select_files(state: RagState) -> dict[str, Any]:
-        question_state, questions = build_file_question(
+        question_state, questions = build_file_questions(
             deps.index, state["folders"], state["query"]
         )
-        result = await ask_jev(deps.jev, question_state, questions)
-        offered = _offered_keys(questions, "file")
-        probabilities = read_probabilities(read_answer(result, "file"), offered)
-        keys = select_labels(probabilities, FILE_THRESHOLD, MAX_FILES)
-        titles = {
-            entry["key"]: entry["title"]
-            for entry in deps.index["files"]
-            if entry["key"] in offered
+        result = await ask_jev(deps.jev, question_state, questions)  # 폴더가 여럿이어도 한 번
+        probabilities_by_folder = {
+            folder: read_probabilities(
+                read_answer(result, file_question_name(folder)),
+                _offered_keys(questions, file_question_name(folder)),
+            )
+            for folder in sorted(state["folders"])
         }
+        keys = merge_file_selections(probabilities_by_folder)
         step = build_step(
-            "file", _verdict_of(keys), keys, probabilities, FILE_THRESHOLD, result, labels=titles
+            "file",
+            _verdict_of(keys),
+            keys,
+            flatten_file_probabilities(probabilities_by_folder),
+            FILE_THRESHOLD,
+            result,
+            labels=build_file_labels(deps.index, state["folders"]),
         )
         return {
             "steps": [*state["steps"], step],

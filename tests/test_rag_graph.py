@@ -17,6 +17,7 @@ from jev_agent.jev import JevClient, JevError, JevResult
 from jev_agent.rag.decisions import (
     FILE_THRESHOLD,
     FOLDER_THRESHOLD,
+    MAX_FILES,
     NONE_OPTION,
     REFUSAL_ANSWER,
     SUFFICIENCY_THRESHOLD,
@@ -118,7 +119,7 @@ def happy_answers() -> dict[str, dict[str, Any]]:
     """One script for all four Jev calls; the question names are distinct."""
     return {
         "folder": choice_answer({"shipping": 0.9, "returns": 0.05, NONE_OPTION: 0.05}),
-        "file": choice_answer(
+        "files__shipping": choice_answer(
             {"shipping__delivery_fee": 0.8, "shipping__delivery_time": 0.1, NONE_OPTION: 0.1}
         ),
         "sufficient": noul_answer(0.9),
@@ -190,12 +191,15 @@ def test_doc_rag_two_folders_send_passages_of_both_to_llm(corpus_root):
     answers["folder"] = choice_answer(
         {"shipping": FOLDER_THRESHOLD + 0.2, "returns": FOLDER_THRESHOLD + 0.2, NONE_OPTION: 0.0}
     )
-    answers["file"] = choice_answer(
+    answers["files__shipping"] = choice_answer(
         {
             "shipping__delivery_fee": FILE_THRESHOLD + 0.3,
-            "returns__refund_policy": FILE_THRESHOLD + 0.2,
+            "shipping__delivery_time": 0.0,
             NONE_OPTION: 0.0,
         }
+    )
+    answers["files__returns"] = choice_answer(
+        {"returns__refund_policy": FILE_THRESHOLD + 0.2, NONE_OPTION: 0.0}
     )
     jev, llm = ScriptedJev(answers), FakeAnswerLLM()
     graph = build_graph(corpus_root, jev, llm)
@@ -203,8 +207,19 @@ def test_doc_rag_two_folders_send_passages_of_both_to_llm(corpus_root):
     output = run_graph(graph, {"query": "배송비 환불"})["output"]
 
     assert output["folders"] == ["returns", "shipping"]
-    file_options = jev.calls[1][1]["file"]["criteria"]
-    assert {"shipping__delivery_fee", "returns__refund_policy"} <= set(file_options)
+    assert len(jev.calls) == 4
+    file_questions = jev.calls[1][1]
+    assert set(file_questions) == {"files__returns", "files__shipping"}
+    assert set(file_questions["files__returns"]["criteria"]) == {
+        "returns__refund_policy",
+        NONE_OPTION,
+    }
+    assert set(file_questions["files__shipping"]["criteria"]) == {
+        "shipping__delivery_fee",
+        "shipping__delivery_time",
+        NONE_OPTION,
+    }
+    assert output["files"] == ["shipping/delivery_fee.md", "returns/refund_policy.md"]
     user_message = llm.calls[0][1][1]
     assert "shipping/delivery_fee.md" in user_message
     assert "returns/refund_policy.md" in user_message
@@ -286,7 +301,10 @@ def test_doc_rag_output_has_exact_contract_keys(corpus_root):
     assert file_step["labels"] == {
         "shipping__delivery_fee": "배송비 안내",
         "shipping__delivery_time": "배송 기간",
+        "none__shipping": "해당 없음 (shipping)",
     }
+    assert NONE_OPTION not in file_step["probabilities"]
+    assert "none__shipping" in file_step["probabilities"]
     assert output["files"] == ["shipping/delivery_fee.md"]
     assert set(output["passages"][0]) == {"path", "line", "text"}
 
@@ -300,7 +318,7 @@ def test_langgraph_json_registers_doc_rag():
 
 def test_doc_rag_passes_files_to_retriever_in_probability_order(corpus_root):
     answers = happy_answers()
-    answers["file"] = choice_answer(
+    answers["files__shipping"] = choice_answer(
         {
             "shipping__delivery_time": 0.7,
             "shipping__delivery_fee": FILE_THRESHOLD + 0.05,
@@ -341,13 +359,47 @@ def test_doc_rag_builds_with_real_corpus_when_root_is_omitted():
 
 
 # --- stop branches and error paths ----------------------------------------------------
-def test_doc_rag_no_file_stops_before_search_and_llm(corpus_root):
-    answers = {
-        "folder": happy_answers()["folder"],
-        "file": choice_answer(
-            {NONE_OPTION: 0.6, "shipping__delivery_fee": 0.3, "shipping__delivery_time": 0.1}
+def two_folder_answers() -> dict[str, dict[str, Any]]:
+    """Folder answer that selects both folders; per-folder file answers are the happy ones."""
+    return {
+        **happy_answers(),
+        "folder": choice_answer(
+            {
+                "shipping": FOLDER_THRESHOLD + 0.2,
+                "returns": FOLDER_THRESHOLD + 0.2,
+                NONE_OPTION: 0.0,
+            }
         ),
+        "files__returns": choice_answer({"returns__refund_policy": 0.8, NONE_OPTION: 0.2}),
     }
+
+
+def shipping_none_on_top() -> dict[str, Any]:
+    return choice_answer(
+        {NONE_OPTION: 0.6, "shipping__delivery_fee": 0.3, "shipping__delivery_time": 0.1}
+    )
+
+
+def returns_none_on_top() -> dict[str, Any]:
+    return choice_answer({NONE_OPTION: 0.9, "returns__refund_policy": 0.1})
+
+
+@pytest.mark.parametrize(
+    "answers",
+    [
+        {
+            "folder": happy_answers()["folder"],
+            "files__shipping": shipping_none_on_top(),
+        },
+        {
+            **two_folder_answers(),
+            "files__shipping": shipping_none_on_top(),
+            "files__returns": returns_none_on_top(),
+        },
+    ],
+    ids=["one_folder_none", "both_folders_none"],
+)
+def test_doc_rag_no_file_stops_before_search_and_llm(corpus_root, answers):
     jev, llm = ScriptedJev(answers), FakeAnswerLLM()
     graph = build_graph(corpus_root, jev, llm)
 
@@ -355,7 +407,93 @@ def test_doc_rag_no_file_stops_before_search_and_llm(corpus_root):
 
     assert output["status"] == "no_file"
     assert [step["kind"] for step in output["steps"]] == ["folder", "file"]
+    assert output["steps"][1]["selected"] == []
     assert output["files"] == []
+    assert len(jev.calls) == 2
+    assert llm.calls == []
+
+
+def test_doc_rag_file_step_flattens_folder_questions_into_one_step(corpus_root):
+    answers = {
+        **two_folder_answers(),
+        "files__returns": choice_answer({"returns__refund_policy": 0.7, NONE_OPTION: 0.3}),
+    }
+    graph = build_graph(corpus_root, ScriptedJev(answers), FakeAnswerLLM())
+
+    output = run_graph(graph, {"query": "배송비 환불"})["output"]
+
+    file_steps = [step for step in output["steps"] if step["kind"] == "file"]
+    assert len(file_steps) == 1
+    file_step = file_steps[0]
+    assert list(file_step["probabilities"]) == [
+        "returns__refund_policy",
+        "none__returns",
+        "shipping__delivery_fee",
+        "shipping__delivery_time",
+        "none__shipping",
+    ]
+    assert set(file_step["labels"]) == set(file_step["probabilities"])
+    assert file_step["labels"]["none__returns"] == "해당 없음 (returns)"
+    assert file_step["selected"] == ["shipping__delivery_fee", "returns__refund_policy"]
+    assert file_step["verdict"] == "shipping__delivery_fee, returns__refund_policy"
+
+
+def test_doc_rag_one_folder_none_other_folder_selects_continues(corpus_root):
+    answers = {**two_folder_answers(), "files__returns": returns_none_on_top()}
+    graph = build_graph(corpus_root, ScriptedJev(answers), FakeAnswerLLM())
+
+    output = run_graph(graph, {"query": "배송비 환불"})["output"]
+
+    assert output["status"] == "answered"
+    assert output["files"] == ["shipping/delivery_fee.md"]
+
+
+def test_doc_rag_merges_files_across_folders_by_probability_and_caps_at_max_files(corpus_root):
+    (corpus_root / "returns" / "exchange.md").write_text(
+        doc("교환 안내", "교환 안내입니다.", "교환은 배송 후 7일 안에 신청합니다."),
+        encoding="utf-8",
+    )
+    answers = {
+        **two_folder_answers(),
+        "files__shipping": choice_answer(
+            {
+                "shipping__delivery_fee": 0.6,
+                "shipping__delivery_time": FILE_THRESHOLD + 0.05,
+                NONE_OPTION: 0.0,
+            }
+        ),
+        "files__returns": choice_answer(
+            {"returns__refund_policy": 0.7, "returns__exchange": 0.4, NONE_OPTION: 0.0}
+        ),
+    }
+    graph = build_graph(corpus_root, ScriptedJev(answers), FakeAnswerLLM())
+
+    output = run_graph(graph, {"query": "배송 환불 교환"})["output"]
+
+    assert len(output["files"]) == MAX_FILES
+    assert output["files"] == [
+        "returns/refund_policy.md",
+        "shipping/delivery_fee.md",
+        "returns/exchange.md",
+    ]
+    assert "shipping/delivery_time.md" not in output["files"]
+
+
+@pytest.mark.parametrize(
+    "broken",
+    [None, {"type": "choice", "probabilities": ["returns__refund_policy"]}],
+    ids=["missing_answer", "probabilities_list"],
+)
+def test_doc_rag_missing_answer_for_one_folder_question_reports_error(corpus_root, broken):
+    answers = {**two_folder_answers(), "files__returns": broken}
+    jev, llm = ScriptedJev(answers), FakeAnswerLLM()
+    graph = build_graph(corpus_root, jev, llm)
+
+    state = run_graph(graph, {"query": "배송비 환불"})
+
+    assert set(jev.calls[1][1]) == {"files__returns", "files__shipping"}
+    assert state["output"] is None
+    assert state["error"]
     assert len(jev.calls) == 2
     assert llm.calls == []
 
@@ -363,7 +501,9 @@ def test_doc_rag_no_file_stops_before_search_and_llm(corpus_root):
 @pytest.mark.parametrize("query", ["해외", "?!"], ids=["word_not_in_documents", "no_tokens"])
 def test_doc_rag_no_passage_skips_sufficiency_and_llm(corpus_root, query):
     answers = {
-        name: answer for name, answer in happy_answers().items() if name in {"folder", "file"}
+        name: answer
+        for name, answer in happy_answers().items()
+        if name in {"folder", "files__shipping"}
     }
     jev, llm = ScriptedJev(answers), FakeAnswerLLM()
     graph = build_graph(corpus_root, jev, llm)
@@ -468,7 +608,7 @@ def malformed_answers(name: str, answer: Any) -> dict[str, dict[str, Any]]:
 @pytest.mark.parametrize(
     "make_jev",
     [
-        lambda: ScriptedJev(malformed_answers("file", None)),
+        lambda: ScriptedJev(malformed_answers("files__shipping", None)),
         lambda: ScriptedJev(malformed_answers("sufficient", {"type": "noul"})),
         lambda: ScriptedJev(
             malformed_answers("folder", {"type": "choice", "probabilities": ["shipping"]})
