@@ -191,7 +191,7 @@ NanoJev, open-alternative-jev, Reticle 은 10번 끝에서 소개만 합니다. 
 
 | 번호 | 주제 | 내용 |
 |---|---|---|
-| 12 | 문서 RAG | 임베딩 없이 폴더, 파일, 구절 순서로 찾음. 폴더와 파일 선택은 Choice, 답해도 되는지는 Noul, 답이 구절에 근거하는지는 Choice 로 Jev 가 판정하고 grep 이 구절을 찾고 LLM 이 답변을 씀. 질의 3개를 3번씩 9회 돌려 모두 기대와 일치(시작값은 폴더 0.25, 파일 0.2, 충분성 0.5). 환불 질의는 returns 0.50~0.57, membership 0.41~0.48 로 두 폴더를 함께 고르고, 문서에 없는 질의는 `none` 0.99 로 `no_folder` 에서 멈춤 |
+| 12 | 문서 RAG | 임베딩 없이 폴더, 파일, 구절 순서로 찾음. 폴더와 파일 선택은 Choice, 답해도 되는지는 Noul, 답이 구절에 근거하는지는 Choice 로 Jev 가 판정하고 grep 이 구절을 찾고 LLM 이 답변을 씀. 질의 3개를 3번씩 9회 돌려 모두 기대와 일치(시작값은 폴더 0.25, 파일 0.2, 충분성 0.5). 환불 질의는 returns 0.49~0.54, membership 0.44~0.49 로 두 폴더를 함께 고르지만, 파일은 `points.md` 하나만 골라(points 0.98, refund_timeline 0.01) 양쪽 파일을 함께 검색하는 경로는 실제 실행에서 나오지 않고 테스트에서만 확인함. 문서에 없는 질의는 `none` 0.99 로 `no_folder` 에서 멈춤 |
 
 노트북은 `scripts/build_notebooks.py` 에서 생성합니다. 내용을 고칠 때는 이 파일을 수정한 뒤 다시 생성하고 실행합니다.
 
@@ -230,7 +230,7 @@ LICENSE           MIT
 
 ```bash
 # 백엔드: 네트워크 없이 가짜 Jev 와 가짜 LLM 으로 분기 검증
-uv run pytest tests/test_jev_agent.py tests/test_patterns.py tests/test_rag_retriever.py tests/test_rag_graph.py -q --timeout=10
+uv run pytest tests/test_jev_agent.py tests/test_patterns.py tests/test_rag_retriever.py tests/test_rag_decisions.py tests/test_rag_graph.py -q --timeout=10
 
 # 프론트엔드: 도구 호출 묶기, 마크다운 표시, 탭 전환, 문서 RAG 탭
 cd frontend
