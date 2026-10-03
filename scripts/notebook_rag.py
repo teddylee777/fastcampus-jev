@@ -19,7 +19,8 @@ from jev_agent.jev import JevClient
 from jev_agent.rag.corpus import INSUFFICIENT_QUERY, SAMPLE_QUERIES, load_corpus_index
 from jev_agent.rag.decisions import (
     FILE_THRESHOLD, FOLDER_THRESHOLD, MAX_FILES, MAX_FOLDERS, SUFFICIENCY_THRESHOLD,
-    build_file_question, build_folder_question, read_answer, read_probabilities, select_labels,
+    build_file_questions, build_folder_question, file_question_name, merge_file_selections,
+    read_answer, read_probabilities, select_labels,
 )
 from jev_agent.rag.graph import build_doc_rag_graph
 from jev_agent.rag.retriever import search_passages
@@ -54,24 +55,25 @@ RAG_RESULTS_SUMMARY = """## 정리
 
 | 질의 | 기대 | 세 번의 결과 | 확인한 값 |
 |---|---|---|---|
-| 배송비는 얼마인가요? | answered | answered 3회 | 폴더는 세 번 모두 `shipping` 만 선택, 충분성 probability 0.94~0.95, 근거 검증 `supports` 3회 |
-| 환불하면 사용한 적립금은 어떻게 되나요? | answered | answered 3회 | 세 번 모두 `returns` 와 `membership` 폴더를 선택(returns 0.49~0.54, membership 0.44~0.49), 파일은 세 번 모두 `points.md` 하나만 선택(points 0.98, refund_timeline 0.01), 충분성 0.93~0.95, 근거 검증 `supports` 3회 |
+| 배송비는 얼마인가요? | answered | answered 3회 | 폴더는 세 번 모두 `shipping` 만 선택(probability 1.00), 충분성 probability 0.95, 근거 검증 `supports` 3회 |
+| 환불하면 사용한 적립금은 어떻게 되나요? | answered | answered 3회 | 세 번 모두 `returns` 와 `membership` 폴더를 선택(returns 0.51~0.57, membership 0.41~0.47), 폴더마다 따로 물은 파일 질문에서 양쪽 파일을 모두 선택(points 0.99, refund_timeline 0.69~0.72), 충분성 0.95, 근거 검증 `supports` 3회 |
 | 주차장 약도를 팩스로 보내주세요 | stopped | `no_folder` 3회 | `none` probability 0.99, 답변 없음 |
 
-세 질의 모두 기대와 맞았고, 기준값은 시작값(폴더 0.25, 파일 0.2, 충분성 0.5)에서 바꾸지 않았습니다. 다만 "두 폴더에 걸침" 질의에서 양쪽 폴더의 파일이 함께 grep 대상이 되는 경로는 실제 실행에서 나오지 않았습니다. 아래 첫 항목에 적었습니다.
+세 질의 모두 기대와 맞았고, "두 폴더에 걸침" 질의는 세 번 모두 양쪽 폴더의 파일이 grep 대상이 됐습니다. 기준값은 시작값(폴더 0.25, 파일 0.2, 충분성 0.5)에서 바꾸지 않았습니다.
 
 ### 읽을 때 주의할 점
 
-- **두 폴더를 골라도 파일은 하나만 골랐습니다.** "두 폴더에 걸침" 질의는 세 번 모두 returns 와 membership 폴더가 선택됐지만, 파일 선택에서는 `membership__points` 가 0.98, `returns__refund_timeline` 이 0.01 이어서 기준값 0.2 를 넘은 파일은 `points.md` 하나였습니다. 그래서 양쪽 파일을 함께 검색하는 경로는 가짜 Jev 를 쓰는 테스트에서만 확인했고, 실제 실행에서는 보지 못했습니다. 답은 맞고 근거 검증도 `supports` 였습니다.
-- **두 폴더에 걸린 질의의 폴더 선택은 아슬아슬합니다.** 세 번째 실행에서 returns 와 membership 이 모두 0.49 로 같았습니다. 폴더 기준값 0.25 는 세 번의 membership 최솟값 0.44 보다 낮아서 두 폴더가 모두 선택됐지만, 기준값을 0.45 쯤으로 올리면 최솟값 0.44 와의 차이가 0.01 뿐이라 실행마다 membership 이 빠질 수 있습니다.
+- **파일 선택을 폴더별 질문으로 바꾼 뒤에 양쪽 파일이 선택됐습니다.** 질문 하나에 두 폴더의 파일을 모아 물었던 이전 저장 실행에서는 points 0.98, refund_timeline 0.01 이어서 refund_timeline 이 기준값 0.2 에 못 미쳤습니다. 폴더마다 나눈 이번 실행에서는 세 번 모두 membership 폴더에서 points 0.99, returns 폴더에서 refund_timeline 0.69~0.72 가 나와 두 파일이 함께 검색됐습니다. 답은 맞고 근거 검증도 `supports` 였습니다. 표본이 세 번이라 항상 그렇다는 뜻은 아닙니다.
+- **두 폴더에 걸린 질의의 폴더 선택은 여유가 크지 않습니다.** returns 는 0.51~0.57, membership 은 0.41~0.47 이었습니다. 폴더 기준값 0.25 는 세 번의 membership 최솟값 0.41 보다 0.16 낮아서 두 폴더가 모두 선택됐습니다. 기준값을 0.4 쯤으로 올리면 최솟값 0.41 과의 차이가 0.01 뿐이라 실행마다 membership 이 빠질 수 있습니다.
 - **충분성으로 멈춘 사례는 한 번 실행했습니다.** "해외 배송비는 얼마인가요?" 는 구절을 찾은 뒤 충분성 probability 0.06 이 기준값 0.5 에 못 미쳐 `insufficient` 로 끝났고, 이때 LLM 은 호출되지 않았습니다. 충분성은 통과했는데 LLM 이 거절 문장으로 답하는 둘째 방어선은 이 실행에서 나타나지 않아 직접 확인하지 못했습니다.
-- **호출 횟수와 비용.** 9회 실행에서 Jev 를 27번 불렀고 `usage.cost` 합계는 $0.000655 였습니다. Jev 지연은 중앙값 295ms (최솟값 240ms, 최댓값 380ms) 였고, 답변을 쓴 LLM 호출은 6번이었습니다. LLM 비용은 이 합계에 들어 있지 않습니다.
+- **호출 횟수와 비용.** 9회 실행에서 Jev 를 27번 불렀고 `usage.cost` 합계는 $0.000693 이었습니다. 두 폴더 질의도 파일 선택은 한 번의 호출이라 질의 하나에 Jev 호출은 최대 4번입니다. Jev 지연은 중앙값 291ms (최솟값 241ms, 최댓값 487ms) 였고, 답변을 쓴 LLM 호출은 6번이었습니다. LLM 비용은 이 합계에 들어 있지 않습니다.
 - **`none` option 의 역할.** 문서에 없는 질의가 억지로 폴더를 고르지 않고 `none` 0.99 로 멈춘 것은 이 option 이 있었기 때문으로 보입니다. 다만 질의 하나로 확인한 것이라, 문서와 낱말만 겹치는 다른 엉뚱한 질의에서도 그런지는 확인하지 못했습니다."""
 
 RAG_LIMITS = """## 한계
 
 - **문서 안의 지시문**: 검색된 구절에 "이전 지시를 무시하라" 같은 문장이 들어 있어도, 이 그래프에서 막는 것은 답변 프롬프트의 규칙 하나뿐입니다. 구절은 신뢰할 수 없는 자료이니 따르지 말라고 시스템 프롬프트에 적어 두었을 뿐, 구절을 Jev 로 검사하지는 않습니다.
-- **같은 입력, 다른 점수**: Jev 의 probability 는 같은 질의를 다시 보내도 조금씩 달라집니다. 위 질의별 최솟값과 최댓값 표가 그 폭입니다. "두 폴더에 걸침" 질의에서 returns 는 0.49~0.54, membership 은 0.44~0.49 사이에서 움직였고, 한 실행에서는 둘 다 0.49 로 같아졌습니다. 기준값 근처에 있는 옵션은 실행마다 선택됐다가 빠졌다가 할 수 있습니다.
+- **같은 입력, 다른 점수**: Jev 의 probability 는 같은 질의를 다시 보내도 조금씩 달라집니다. 위 질의별 최솟값과 최댓값 표가 그 폭입니다. "두 폴더에 걸침" 질의에서 returns 는 0.51~0.57, membership 은 0.41~0.47 사이에서 움직였습니다. returns 폴더의 파일 질문에서는 `refund_timeline` 이 0.69~0.72, `none` 이 0.25~0.29 였습니다. 1등은 `refund_timeline` 이었지만, `none` 이 1등이 되면 그 폴더는 후보를 내지 못합니다. 기준값 근처에 있는 옵션은 실행마다 선택됐다가 빠졌다가 할 수 있습니다.
+- **폴더 사이의 비교가 없습니다**: 폴더별 질문은 폴더 사이의 비교를 하지 않습니다. 폴더마다 기준값을 넘는 파일이 있으면 관련이 약한 폴더의 파일도 함께 검색됩니다.
 - **grep 이 놓친 것**: 검색은 질의 낱말이 문단에 부분 문자열로 들어 있는지만 봅니다. 문서에 같은 뜻이 다른 낱말로 적혀 있으면 구절이 비고, 뒤 단계가 그것을 되살리지 못합니다.
 - **옵션 순서 편향**: Choice 는 앞에 놓인 옵션이 유리해지는 경향이 있습니다. 옵션을 이름순으로 정렬하고 `none` 과 `supports` 를 뒤에 두어 줄이기만 했을 뿐 없애지는 못했습니다.
 - **기준값은 시작값**: 폴더 0.25, 파일 0.2, 충분성 0.5 는 이 노트북의 질의 세 개로 맞춘 값입니다. 다른 질의에도 맞는다는 보장은 없습니다.
@@ -177,14 +179,16 @@ pd.DataFrame(folder_rows).set_index("질의")""",
         "md",
         """## 파일 선택과 grep
 
-폴더 선택에서 기준값(`FOLDER_THRESHOLD`) 이상인 폴더를 최대 `MAX_FOLDERS` 개까지 고릅니다. 1등이 `none` 이면 아무것도 고르지 않고 거기서 멈춥니다. 고른 폴더 안의 파일들로 다시 Choice 질문을 만들어 파일을 고르고(`FILE_THRESHOLD` 이상, 최대 `MAX_FILES` 개), 고른 파일에서 grep 으로 구절을 찾습니다.
+폴더 선택에서 기준값(`FOLDER_THRESHOLD`) 이상인 폴더를 최대 `MAX_FOLDERS` 개까지 고릅니다. 1등이 `none` 이면 아무것도 고르지 않고 거기서 멈춥니다.
 
-grep 은 질의를 낱말로 쪼개 조사를 하나 떼고, 그 낱말이 부분 문자열로 들어 있는 문단을 가져옵니다. 결과는 Jev 가 파일에 준 probability 순서를 따르고, 문단마다 `경로:줄 번호` 가 붙습니다.""",
+고른 폴더마다 Choice 질문을 하나씩 만들고, 질문들을 한 번의 `jev.decide` 호출로 함께 보냅니다. 각 질문의 option 은 그 폴더 안의 파일과 `none` 이라서, probability 는 폴더 안의 파일끼리만 나눠 가집니다. 폴더 사이의 비교는 하지 않습니다. 폴더마다 기준값(`FILE_THRESHOLD`) 이상인 파일을 후보로 모으고, 후보를 probability 내림차순으로 최대 `MAX_FILES` 개까지 고릅니다. 그 폴더에서 `none` 이 1등이면 그 폴더는 후보를 내지 않습니다. 고른 파일에서 grep 으로 구절을 찾습니다.
+
+grep 은 질의를 낱말로 쪼개 조사를 하나 떼고, 그 낱말이 부분 문자열로 들어 있는 문단을 가져옵니다. 결과는 고른 파일의 순서를 따르고, 문단마다 `경로:줄 번호` 가 붙습니다.""",
     ),
     (
         "code",
         """path_by_key = {entry["key"]: entry["path"] for entry in index["files"]}
-file_probabilities = {}
+file_probabilities = {}  # {질의: {폴더: {키: probability}}}
 
 for sample in SAMPLE_QUERIES:
     query = sample["query"]
@@ -193,13 +197,15 @@ for sample in SAMPLE_QUERIES:
     print("  고른 폴더:", folders or "없음 (여기서 멈춤)")
     if not folders:
         continue
-    state, questions = build_file_question(index, folders, query)
-    result = jev.decide(state, questions)
-    offered = list(questions["file"]["criteria"])
-    probabilities = read_probabilities(read_answer(result, "file"), offered)
-    file_probabilities[query] = probabilities
-    keys = select_labels(probabilities, FILE_THRESHOLD, MAX_FILES)
-    print("  파일 probability:", {key: round(value, 3) for key, value in probabilities.items()})
+    state, questions = build_file_questions(index, folders, query)
+    result = jev.decide(state, questions)  # 폴더가 여럿이어도 호출은 한 번
+    file_probabilities[query] = {}
+    for folder in sorted(folders):
+        name = file_question_name(folder)
+        probabilities = read_probabilities(read_answer(result, name), list(questions[name]["criteria"]))
+        file_probabilities[query][folder] = probabilities
+        print(f"  {folder} 폴더 질문:", {key: round(value, 3) for key, value in probabilities.items()})
+    keys = merge_file_selections(file_probabilities[query])
     print("  고른 파일:", keys or "없음 (여기서 멈춤)")
     if not keys:
         continue
@@ -212,17 +218,17 @@ for sample in SAMPLE_QUERIES:
         "md",
         """### 두 폴더에 걸린 질의의 파일 선택
 
-위 출력에서 "두 폴더에 걸침" 질의는 폴더 단계에서 returns 0.50, membership 0.48 로 두 폴더가 모두 선택됐습니다. 그런데 파일 단계에서는 `membership__points` 가 0.98, `returns__refund_timeline` 이 0.01 이었고, 파일 기준값 0.2 를 넘은 것은 `points.md` 하나였습니다. 그래서 grep 은 `points.md` 에서만 구절을 찾았습니다.
+위 출력에서 "두 폴더에 걸침" 질의는 폴더 단계에서 returns 0.53, membership 0.45 로 두 폴더가 모두 선택됐습니다. 파일 단계는 폴더마다 따로 물었습니다. membership 폴더 질문에서는 `membership__points` 가 0.99, returns 폴더 질문에서는 `returns__refund_timeline` 이 0.72 였고, 둘 다 파일 기준값 0.2 를 넘었습니다. 그래서 grep 은 `membership/points.md` 와 `returns/refund_timeline.md` 두 파일에서 구절을 찾았습니다.
 
-아래 9회 실행 표에서도 세 번 모두 같았습니다(points 0.98, refund_timeline 0.01). 폴더 두 개가 선택돼도 양쪽 폴더의 파일이 함께 grep 대상이 되는 경로는 이 노트북의 실제 실행에서는 나오지 않았고, 가짜 Jev 를 쓰는 테스트 `test_doc_rag_two_folders_send_passages_of_both_to_llm` 에서만 확인했습니다.
+아래 9회 실행 표에서도 세 번 모두 같았습니다(points 0.99, refund_timeline 0.69~0.72). 두 폴더가 선택되면 양쪽 폴더의 파일이 함께 grep 대상이 되는 경로가 이 노트북의 실제 실행에서 나온 것입니다.
 
-답은 맞았습니다. 두 문서에는 환불 때 사용한 적립금을 같은 금액으로 되돌려 준다는 문장이 모두 들어 있어서, 한 파일만 봐도 답할 수 있습니다. Jev 가 그래서 한 파일만 골랐는지는 확인하지 못했습니다.""",
+폴더별 질문으로 바꾼 이유가 있습니다. 이전 버전은 두 폴더의 파일을 질문 하나에 모아서 물었습니다. Choice 는 한 질문 안에서 probability 를 나눠 갖기 때문에 한 option 에 몰리기 쉽고, 그때 저장된 실행에서는 `membership__points` 0.98, `returns__refund_timeline` 0.01 이어서 refund_timeline 이 기준값 0.2 에 한참 못 미쳤습니다. 이 값은 이전 저장 실행의 것이고, 이 노트북의 현재 출력이 아닙니다. 질문을 폴더마다 나누면 확률을 나눠 갖는 범위가 폴더 안의 파일로 좁아져서, 한 폴더의 높은 값이 다른 폴더의 파일을 눌러 버리지 않습니다.""",
     ),
     (
         "md",
         """## 기준값 실험
 
-같은 probability 에 기준값만 바꿔서 적용해 봅니다. Jev 를 다시 부르지 않고 위에서 받은 값을 그대로 씁니다. 기준값이 낮으면 더 많은 폴더와 파일이 선택되고, 높으면 적게 선택됩니다. 1등이 `none` 이면 기준값과 상관없이 아무것도 선택하지 않는다는 점도 확인할 수 있습니다.""",
+같은 probability 에 기준값만 바꿔서 적용해 봅니다. Jev 를 다시 부르지 않고 위에서 받은 값을 그대로 씁니다. 기준값이 낮으면 더 많은 폴더와 파일이 선택되고, 높으면 적게 선택됩니다. 1등이 `none` 이면 기준값과 상관없이 아무것도 선택하지 않는다는 점도 확인할 수 있습니다. 파일은 질문이 폴더마다 따로라서, 표의 한 줄이 질의 하나와 폴더 하나입니다.""",
     ),
     (
         "code",
@@ -241,8 +247,13 @@ threshold_table(folder_probabilities, [0.1, 0.25, 0.4], MAX_FOLDERS)""",
     ),
     (
         "code",
-        """print(f"파일 선택 (최대 {MAX_FILES}개, 시작값 {FILE_THRESHOLD})")
-threshold_table(file_probabilities, [0.1, 0.2, 0.4], MAX_FILES)""",
+        """print(f"파일 선택 (폴더마다 최대 {MAX_FILES}개, 시작값 {FILE_THRESHOLD})")
+file_threshold_rows = {
+    f"{query} / {folder}": probabilities
+    for query, by_folder in file_probabilities.items()
+    for folder, probabilities in by_folder.items()
+}
+threshold_table(file_threshold_rows, [0.1, 0.2, 0.4], MAX_FILES)""",
     ),
     (
         "md",
@@ -326,7 +337,9 @@ for run in runs:
         "membership": round(folder_probs["membership"], 3) if "membership" in folder_probs else None,
         "refund_timeline": round(file_probs["returns__refund_timeline"], 3) if "returns__refund_timeline" in file_probs else None,
         "points": round(file_probs["membership__points"], 3) if "membership__points" in file_probs else None,
-        "고른 파일": ", ".join(path.split("/")[-1] for path in run["files"]) or "(없음)",
+        "none(returns)": round(file_probs["none__returns"], 3) if "none__returns" in file_probs else None,
+        "none(membership)": round(file_probs["none__membership"], 3) if "none__membership" in file_probs else None,
+        "고른 파일": ", ".join(run["files"]) or "(없음)",
         "충분성": round(sufficiency, 3) if sufficiency is not None else None,
         "근거 검증": run["grounding"],
     })
@@ -356,6 +369,8 @@ for sample in SAMPLE_QUERIES:
         "none": min_max([step_probabilities(run, "folder").get("none") for run in mine]),
         "refund_timeline": min_max([step_probabilities(run, "file").get("returns__refund_timeline") for run in mine]),
         "points": min_max([step_probabilities(run, "file").get("membership__points") for run in mine]),
+        "none(returns)": min_max([step_probabilities(run, "file").get("none__returns") for run in mine]),
+        "none(membership)": min_max([step_probabilities(run, "file").get("none__membership") for run in mine]),
         "충분성": min_max([step_probabilities(run, "sufficiency").get("sufficient") for run in mine]),
     })
 pd.DataFrame(spread_rows).set_index("질의")""",
@@ -367,7 +382,7 @@ pd.DataFrame(spread_rows).set_index("질의")""",
 골든 셋의 기대값을 실행 결과와 맞춰 봅니다. 기대값은 결과에 맞춰 고치지 않았습니다.
 
 - 기대가 `answered` 인 질의는 세 번 모두 `status` 가 `answered` 여야 합니다.
-- "두 폴더에 걸침" 질의는 세 번 모두 고른 폴더에 `returns` 와 `membership` 이 함께 있어야 합니다. 폴더만 따지고 파일은 따지지 않습니다. 파일 선택은 위 "두 폴더에 걸린 질의의 파일 선택" 절에서 따로 다룹니다.
+- "두 폴더에 걸침" 질의는 세 번 모두 고른 폴더에 `returns` 와 `membership` 이 함께 있어야 하고, 고른 파일에도 `returns/` 로 시작하는 경로와 `membership/` 으로 시작하는 경로가 하나 이상씩 있어야 합니다.
 - 기대가 `stopped` 인 질의는 세 번 모두 종료 사유 네 가지(`no_folder`, `no_file`, `no_passage`, `insufficient`) 중 하나로 끝나고 답이 없어야 합니다. 어느 단계에서 멈췄는지는 따지지 않습니다.""",
     ),
     (
@@ -380,12 +395,21 @@ for sample in SAMPLE_QUERIES:
         passed = all(run["status"] == "answered" for run in mine)
     else:
         passed = all(run["status"] in STOP_STATUSES and run["answer"] is None for run in mine)
+    both_sides = "-"
     if sample["label"] == "두 폴더에 걸침":
         passed = passed and all({"returns", "membership"} <= set(run["folders"]) for run in mine)
+        both_count = sum(
+            1 for run in mine
+            if any(path.startswith("returns/") for path in run["files"])
+            and any(path.startswith("membership/") for path in run["files"])
+        )
+        both_sides = f"{both_count}/{len(mine)}"
+        passed = passed and both_count == len(mine)
     gate_rows.append({
         "질의": sample["label"],
         "기대": sample["expected"],
         "세 번의 status": ", ".join(run["status"] for run in mine),
+        "양쪽 폴더의 파일을 고른 횟수": both_sides,
         "통과": passed,
     })
 pd.DataFrame(gate_rows).set_index("질의")""",
