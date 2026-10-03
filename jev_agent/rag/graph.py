@@ -6,6 +6,8 @@ Jev 와 LLM 호출은 서버에서만 한다. API 키가 브라우저로 나가�
 
 from __future__ import annotations
 
+import functools
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -13,7 +15,7 @@ from typing import Any, Literal
 from dotenv import load_dotenv
 from langgraph.graph import END, START, StateGraph
 
-from jev_agent.jev import JevClient
+from jev_agent.jev import JevClient, JevError
 from jev_agent.pattern_graphs import PatternState
 from jev_agent.patterns.view import require_text
 from jev_agent.rag.corpus import DOCUMENTS_ROOT, CorpusIndex, load_corpus_index
@@ -31,6 +33,7 @@ from jev_agent.rag.decisions import (
     build_step,
     build_sufficiency_question,
     format_passages,
+    is_refusal,
     read_answer,
     read_grounding,
     read_noul,
@@ -46,6 +49,7 @@ ANSWER_SYSTEM_PROMPT = f"""당신은 쇼핑몰 '테디마켓' 고객 안내 담�
 - 구절에 질문의 답이 없으면 정확히 "{REFUSAL_ANSWER}" 라고만 답한다.
 - 마크다운 없이 일반 텍스트로 2~4문장으로 답한다."""
 ANSWER_USER_TEMPLATE = "질문: {query}\n\n<passages>\n{passages}\n</passages>"
+ANSWER_ERROR = "답변 생성에 실패했습니다"
 
 
 class RagState(
@@ -66,6 +70,22 @@ class RagDeps:
     jev: JevClient
     llm: Any
     index: CorpusIndex
+
+
+RagNode = Callable[[RagState], Awaitable[dict[str, Any]]]
+
+
+def catch_step_errors(node: RagNode) -> RagNode:
+    """Jev·검색기 노드의 입력·응답 오류를 예외 대신 state 의 error 로 돌려준다."""
+
+    @functools.wraps(node)
+    async def wrapper(state: RagState) -> dict[str, Any]:
+        try:
+            return await node(state)
+        except (ValueError, JevError) as exc:
+            return {"output": None, "error": str(exc)}
+
+    return wrapper
 
 
 def _offered_keys(questions: dict[str, dict[str, Any]], name: str) -> list[str]:
@@ -128,6 +148,7 @@ def build_select_files_node(deps: RagDeps):
         return {
             "steps": [*state["steps"], step],
             "files": [path_by_key[key] for key in keys],
+            "status": None if keys else "no_file",
         }
 
     return select_files
@@ -135,7 +156,8 @@ def build_select_files_node(deps: RagDeps):
 
 def build_search_passages_node(deps: RagDeps):
     async def find_passages(state: RagState) -> dict[str, Any]:
-        return {"passages": search_passages(deps.index, state["files"], state["query"])}
+        passages = search_passages(deps.index, state["files"], state["query"])
+        return {"passages": passages, "status": None if passages else "no_passage"}
 
     return find_passages
 
@@ -154,7 +176,10 @@ def build_judge_sufficiency_node(deps: RagDeps):
             SUFFICIENCY_THRESHOLD,
             result,
         )
-        return {"steps": [*state["steps"], step]}
+        return {
+            "steps": [*state["steps"], step],
+            "status": None if is_sufficient else "insufficient",
+        }
 
     return judge_sufficiency
 
@@ -164,10 +189,19 @@ def build_generate_answer_node(deps: RagDeps):
         user_message = ANSWER_USER_TEMPLATE.format(
             query=state["query"], passages=format_passages(state["passages"])
         )
-        response = await deps.llm.ainvoke(
-            [("system", ANSWER_SYSTEM_PROMPT), ("user", user_message)]
-        )
-        return {"answer": str(response.content).strip()}
+        try:
+            response = await deps.llm.ainvoke(
+                [("system", ANSWER_SYSTEM_PROMPT), ("user", user_message)]
+            )
+        except Exception as exc:  # noqa: BLE001 - 메시지에 요청 내용이 섞일 수 있어 종류만 알린다.
+            return {"output": None, "error": f"{ANSWER_ERROR} ({type(exc).__name__})"}
+        content = response.content
+        if not isinstance(content, str) or not content.strip():
+            return {"output": None, "error": f"{ANSWER_ERROR} (빈 응답)"}
+        answer = content.strip()
+        if is_refusal(answer):
+            return {"answer": None, "grounding": None, "status": "insufficient"}
+        return {"answer": answer}
 
     return generate_answer
 
@@ -200,8 +234,47 @@ def build_build_output_node(deps: RagDeps):  # deps 는 다른 팩토리와 시�
 
 
 # --- 라우터 -----------------------------------------------------------------------
-def route_after_select_folders(state: RagState) -> Literal["select_files", "build_output"]:
-    return "build_output" if state.get("status") else "select_files"
+def _stop_route(state: RagState) -> Literal["build_output", "end"] | None:
+    """오류면 끝내고, 종료 사유가 있으면 출력을 만든다. 둘 다 아니면 None."""
+    if state.get("error"):
+        return "end"
+    if state.get("status"):
+        return "build_output"
+    return None
+
+
+def route_after_select_folders(
+    state: RagState,
+) -> Literal["select_files", "build_output", "end"]:
+    return _stop_route(state) or "select_files"
+
+
+def route_after_select_files(
+    state: RagState,
+) -> Literal["search_passages", "build_output", "end"]:
+    return _stop_route(state) or "search_passages"
+
+
+def route_after_search_passages(
+    state: RagState,
+) -> Literal["judge_sufficiency", "build_output", "end"]:
+    return _stop_route(state) or "judge_sufficiency"
+
+
+def route_after_judge_sufficiency(
+    state: RagState,
+) -> Literal["generate_answer", "build_output", "end"]:
+    return _stop_route(state) or "generate_answer"
+
+
+def route_after_generate_answer(
+    state: RagState,
+) -> Literal["verify_grounding", "build_output", "end"]:
+    return _stop_route(state) or "verify_grounding"
+
+
+def route_after_verify_grounding(state: RagState) -> Literal["build_output", "end"]:
+    return _stop_route(state) or "build_output"
 
 
 # --- 그래프 -----------------------------------------------------------------------
@@ -221,25 +294,45 @@ def build_doc_rag_graph(
     deps = RagDeps(jev=client, llm=llm, index=load_corpus_index(root or DOCUMENTS_ROOT))
 
     graph = StateGraph(RagState)
-    graph.add_node("select_folders", build_select_folders_node(deps))
-    graph.add_node("select_files", build_select_files_node(deps))
-    graph.add_node("search_passages", build_search_passages_node(deps))
-    graph.add_node("judge_sufficiency", build_judge_sufficiency_node(deps))
+    graph.add_node("select_folders", catch_step_errors(build_select_folders_node(deps)))
+    graph.add_node("select_files", catch_step_errors(build_select_files_node(deps)))
+    graph.add_node("search_passages", catch_step_errors(build_search_passages_node(deps)))
+    graph.add_node("judge_sufficiency", catch_step_errors(build_judge_sufficiency_node(deps)))
     graph.add_node("generate_answer", build_generate_answer_node(deps))
-    graph.add_node("verify_grounding", build_verify_grounding_node(deps))
+    graph.add_node("verify_grounding", catch_step_errors(build_verify_grounding_node(deps)))
     graph.add_node("build_output", build_build_output_node(deps))
 
     graph.add_edge(START, "select_folders")
     graph.add_conditional_edges(
         "select_folders",
         route_after_select_folders,
-        {"select_files": "select_files", "build_output": "build_output"},
+        {"select_files": "select_files", "build_output": "build_output", "end": END},
     )
-    graph.add_edge("select_files", "search_passages")
-    graph.add_edge("search_passages", "judge_sufficiency")
-    graph.add_edge("judge_sufficiency", "generate_answer")
-    graph.add_edge("generate_answer", "verify_grounding")
-    graph.add_edge("verify_grounding", "build_output")
+    graph.add_conditional_edges(
+        "select_files",
+        route_after_select_files,
+        {"search_passages": "search_passages", "build_output": "build_output", "end": END},
+    )
+    graph.add_conditional_edges(
+        "search_passages",
+        route_after_search_passages,
+        {"judge_sufficiency": "judge_sufficiency", "build_output": "build_output", "end": END},
+    )
+    graph.add_conditional_edges(
+        "judge_sufficiency",
+        route_after_judge_sufficiency,
+        {"generate_answer": "generate_answer", "build_output": "build_output", "end": END},
+    )
+    graph.add_conditional_edges(
+        "generate_answer",
+        route_after_generate_answer,
+        {"verify_grounding": "verify_grounding", "build_output": "build_output", "end": END},
+    )
+    graph.add_conditional_edges(
+        "verify_grounding",
+        route_after_verify_grounding,
+        {"build_output": "build_output", "end": END},
+    )
     graph.add_edge("build_output", END)
     return graph.compile(name="jev-doc-rag", checkpointer=checkpointer)
 

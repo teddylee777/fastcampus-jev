@@ -12,7 +12,7 @@ from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
 import jev_agent.rag.graph as rag_graph
-from jev_agent.jev import JevResult
+from jev_agent.jev import JevError, JevResult
 from jev_agent.rag.corpus import CorpusIndex
 from jev_agent.rag.decisions import (
     FILE_THRESHOLD,
@@ -22,6 +22,7 @@ from jev_agent.rag.decisions import (
     MAX_PASSAGE_CHARS,
     NONE_OPTION,
     REFUSAL_ANSWER,
+    SUFFICIENCY_THRESHOLD,
     build_file_question,
     build_folder_question,
     build_step,
@@ -56,15 +57,53 @@ class ScriptedJev:
         return self.decide(state, questions)
 
 
+class FailingJev(ScriptedJev):
+    """Raises JevError on the fail_on-th adecide call (1-based)."""
+
+    def __init__(self, answers: dict[str, dict[str, Any]], fail_on: int):
+        super().__init__(answers)
+        self.fail_on = fail_on
+
+    async def adecide(self, state: Any, questions: dict) -> JevResult:
+        if len(self.calls) + 1 == self.fail_on:
+            self.calls.append((state, questions))
+            raise JevError("Jev 호출 실패 (HTTP 402)")
+        return self.decide(state, questions)
+
+
+class ListAnswersJev(ScriptedJev):
+    """Returns an `answers` that is not a mapping."""
+
+    async def adecide(self, state: Any, questions: dict) -> JevResult:
+        self.calls.append((state, questions))
+        return JevResult(answers=[], usage={"cost": 0.00001}, latency_ms=10.0)
+
+
+class UsageJev(ScriptedJev):
+    """Answers as scripted but reports the given `usage` verbatim."""
+
+    def __init__(self, answers: dict[str, dict[str, Any]], usage: Any):
+        super().__init__(answers)
+        self.usage = usage
+
+    def decide(self, state: Any, questions: dict) -> JevResult:
+        self.calls.append((state, questions))
+        answers = {name: self.answers.get(name) for name in questions}
+        return JevResult(answers=answers, usage=self.usage, latency_ms=10.0)
+
+
 class FakeAnswerLLM:
     """Stands in for the chat model that writes the answer; records the messages it receives."""
 
-    def __init__(self, content: Any = ANSWER_TEXT):
+    def __init__(self, content: Any = ANSWER_TEXT, fail: bool = False):
         self.content = content
+        self.fail = fail
         self.calls: list[list[tuple[str, str]]] = []
 
     async def ainvoke(self, messages: list[tuple[str, str]]) -> AIMessage:
         self.calls.append(messages)
+        if self.fail:
+            raise RuntimeError("secret detail")
         return AIMessage(content=self.content)
 
 
@@ -544,3 +583,226 @@ def test_doc_rag_builds_with_real_corpus_when_root_is_omitted():
     graph = build_doc_rag_graph(jev=ScriptedJev(happy_answers()), llm=FakeAnswerLLM())
 
     assert graph.name == "jev-doc-rag"
+
+
+# --- stop branches and error paths ----------------------------------------------------
+def test_doc_rag_no_file_stops_before_search_and_llm(corpus_root):
+    answers = {
+        "folder": happy_answers()["folder"],
+        "file": choice_answer(
+            {NONE_OPTION: 0.6, "shipping__delivery_fee": 0.3, "shipping__delivery_time": 0.1}
+        ),
+    }
+    jev, llm = ScriptedJev(answers), FakeAnswerLLM()
+    graph = build_graph(corpus_root, jev, llm)
+
+    output = run_graph(graph, {"query": "배송비는 얼마인가요?"})["output"]
+
+    assert output["status"] == "no_file"
+    assert [step["kind"] for step in output["steps"]] == ["folder", "file"]
+    assert output["files"] == []
+    assert len(jev.calls) == 2
+    assert llm.calls == []
+
+
+@pytest.mark.parametrize("query", ["해외", "?!"], ids=["word_not_in_documents", "no_tokens"])
+def test_doc_rag_no_passage_skips_sufficiency_and_llm(corpus_root, query):
+    answers = {
+        name: answer for name, answer in happy_answers().items() if name in {"folder", "file"}
+    }
+    jev, llm = ScriptedJev(answers), FakeAnswerLLM()
+    graph = build_graph(corpus_root, jev, llm)
+
+    output = run_graph(graph, {"query": query})["output"]
+
+    assert output["status"] == "no_passage"
+    assert output["passages"] == []
+    assert output["files"] == ["shipping/delivery_fee.md"]
+    assert len(jev.calls) == 2
+    assert llm.calls == []
+
+
+@pytest.mark.parametrize(
+    "probability",
+    [SUFFICIENCY_THRESHOLD - 0.01, SUFFICIENCY_THRESHOLD],
+    ids=["below_threshold", "at_threshold"],
+)
+def test_doc_rag_insufficient_skips_llm(corpus_root, probability):
+    answers = happy_answers()
+    answers["sufficient"] = noul_answer(probability)
+    jev, llm = ScriptedJev(answers), FakeAnswerLLM()
+    graph = build_graph(corpus_root, jev, llm)
+
+    output = run_graph(graph, {"query": "배송비는 얼마인가요?"})["output"]
+
+    if probability < SUFFICIENCY_THRESHOLD:
+        assert output["status"] == "insufficient"
+        assert output["answer"] is None
+        assert output["passages"] != []
+        assert output["steps"][-1]["kind"] == "sufficiency"
+        assert output["steps"][-1]["verdict"] == "insufficient"
+        assert llm.calls == []
+    else:
+        assert output["status"] == "answered"
+        assert len(llm.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "content",
+    [REFUSAL_ANSWER, f"{REFUSAL_ANSWER}.\n", f'"{REFUSAL_ANSWER}"'],
+    ids=["plain", "period_and_newline", "quoted"],
+)
+def test_doc_rag_llm_refusal_ends_insufficient_without_grounding(corpus_root, content):
+    jev, llm = ScriptedJev(happy_answers()), FakeAnswerLLM(content=content)
+    graph = build_graph(corpus_root, jev, llm)
+
+    output = run_graph(graph, {"query": "배송비는 얼마인가요?"})["output"]
+
+    assert output["status"] == "insufficient"
+    assert output["answer"] is None
+    assert output["grounding"] is None
+    assert output["passages"] != []
+    assert [step["kind"] for step in output["steps"]] == ["folder", "file", "sufficiency"]
+    assert output["steps"][-1]["verdict"] == "sufficient"
+    assert len(jev.calls) == 3
+    assert len(llm.calls) == 1
+
+
+def test_doc_rag_empty_query_reports_error_without_jev_call(corpus_root):
+    jev, llm = ScriptedJev(happy_answers()), FakeAnswerLLM()
+    graph = build_graph(corpus_root, jev, llm)
+
+    state = run_graph(graph, {"query": ""})
+
+    assert state["output"] is None
+    assert "query" in state["error"]
+    assert jev.calls == []
+
+
+@pytest.mark.parametrize(
+    "payload", [None, ["query"], "query", 3], ids=["none", "list", "string", "number"]
+)
+def test_doc_rag_non_object_payload_reports_error_without_jev_call(corpus_root, payload):
+    jev, llm = ScriptedJev(happy_answers()), FakeAnswerLLM()
+    graph = build_graph(corpus_root, jev, llm)
+
+    state = run_graph(graph, payload)
+
+    assert state["output"] is None
+    assert "payload" in state["error"]
+    assert jev.calls == []
+    assert llm.calls == []
+
+
+@pytest.mark.parametrize(("fail_on", "llm_calls"), [(1, 0), (2, 0), (3, 0), (4, 1)])
+def test_doc_rag_jev_failure_at_any_call_reports_error(corpus_root, fail_on, llm_calls):
+    jev, llm = FailingJev(happy_answers(), fail_on=fail_on), FakeAnswerLLM()
+    graph = build_graph(corpus_root, jev, llm)
+
+    state = run_graph(graph, {"query": "배송비는 얼마인가요?"})
+
+    assert state["output"] is None
+    assert "402" in state["error"]
+    assert len(llm.calls) == llm_calls
+
+
+def malformed_answers(name: str, answer: Any) -> dict[str, dict[str, Any]]:
+    return {**happy_answers(), name: answer}
+
+
+@pytest.mark.parametrize(
+    "make_jev",
+    [
+        lambda: ScriptedJev(malformed_answers("file", None)),
+        lambda: ScriptedJev(malformed_answers("sufficient", {"type": "noul"})),
+        lambda: ScriptedJev(
+            malformed_answers("folder", {"type": "choice", "probabilities": ["shipping"]})
+        ),
+        lambda: ScriptedJev(malformed_answers("sufficient", noul_answer(1.5))),
+        lambda: ListAnswersJev({}),
+    ],
+    ids=["file_none", "sufficient_without_noul", "folder_probabilities_list", "noul_1_5", "list"],
+)
+def test_doc_rag_malformed_jev_answer_reports_error(corpus_root, make_jev):
+    graph = build_graph(corpus_root, make_jev(), FakeAnswerLLM())
+
+    state = run_graph(graph, {"query": "배송비는 얼마인가요?"})
+
+    assert state["output"] is None
+    assert state["error"]
+
+
+@pytest.mark.parametrize("usage", [None, [], {"cost": None}], ids=["none", "list", "cost_none"])
+def test_doc_rag_malformed_jev_usage_reports_error(corpus_root, usage):
+    jev, llm = UsageJev(happy_answers(), usage), FakeAnswerLLM()
+    graph = build_graph(corpus_root, jev, llm)
+
+    state = run_graph(graph, {"query": "배송비는 얼마인가요?"})
+
+    assert state["output"] is None
+    assert state["error"]
+    assert len(jev.calls) == 1
+    assert llm.calls == []
+
+
+def test_doc_rag_llm_failure_reports_error(corpus_root):
+    jev, llm = ScriptedJev(happy_answers()), FakeAnswerLLM(fail=True)
+    graph = build_graph(corpus_root, jev, llm)
+
+    state = run_graph(graph, {"query": "배송비는 얼마인가요?"})
+
+    assert state["output"] is None
+    assert "답변 생성" in state["error"]
+    assert "RuntimeError" in state["error"]
+    assert "secret detail" not in state["error"]
+    assert len(jev.calls) == 3
+
+
+@pytest.mark.parametrize(
+    "content",
+    ["", "   \n", [{"type": "text", "text": ANSWER_TEXT}]],
+    ids=["empty", "whitespace", "content_blocks"],
+)
+def test_doc_rag_empty_llm_content_reports_error(corpus_root, content):
+    jev, llm = ScriptedJev(happy_answers()), FakeAnswerLLM(content=content)
+    graph = build_graph(corpus_root, jev, llm)
+
+    state = run_graph(graph, {"query": "배송비는 얼마인가요?"})
+
+    assert state["output"] is None
+    assert "답변 생성" in state["error"]
+    assert len(jev.calls) == 3
+
+
+@pytest.mark.parametrize(
+    ("router_name", "next_node"),
+    [
+        ("route_after_select_folders", "select_files"),
+        ("route_after_select_files", "search_passages"),
+        ("route_after_search_passages", "judge_sufficiency"),
+        ("route_after_judge_sufficiency", "generate_answer"),
+        ("route_after_generate_answer", "verify_grounding"),
+        ("route_after_verify_grounding", "build_output"),
+    ],
+)
+def test_routers_send_error_to_end_and_status_to_build_output(router_name, next_node):
+    router = getattr(rag_graph, router_name)
+
+    assert router({"error": "boom", "status": "answered"}) == "end"
+    assert router({"error": "boom"}) == "end"
+    assert router({"status": "insufficient"}) == "build_output"
+    assert router({"status": None, "error": None}) == next_node
+
+
+def test_doc_rag_run_after_error_run_on_same_thread_is_clean(corpus_root):
+    jev, llm = ScriptedJev(happy_answers()), FakeAnswerLLM()
+    graph = build_graph(corpus_root, jev, llm, checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "thread-1"}}
+
+    first = run_graph(graph, {"query": ""}, config)
+    second = run_graph(graph, {"query": "배송비는 얼마인가요?"}, config)
+
+    assert first["error"]
+    assert second["error"] is None
+    assert second["output"]["status"] == "answered"
+    assert len(second["output"]["steps"]) == 4
