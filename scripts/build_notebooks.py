@@ -13,6 +13,7 @@ import nbformat
 from nbformat.v4 import new_code_cell, new_markdown_cell, new_notebook
 from notebook_guardrails import GUARDRAIL_NOTEBOOK
 from notebook_principles import PRINCIPLES_NOTEBOOK
+from notebook_rag import RAG_NOTEBOOK
 from notebooks_oss import OSS_NOTEBOOKS
 
 OUT = Path(__file__).resolve().parent.parent / "notebooks"
@@ -1007,6 +1008,7 @@ Jev 는 왜 그렇게 판단했는지 설명하지 않습니다. 대신 질문�
 NOTEBOOKS.update(OSS_NOTEBOOKS)
 NOTEBOOKS["00-jev-원리와-구조.ipynb"] = PRINCIPLES_NOTEBOOK
 NOTEBOOKS["11-가드레일-확장과-비교.ipynb"] = GUARDRAIL_NOTEBOOK
+NOTEBOOKS["12-문서-RAG.ipynb"] = RAG_NOTEBOOK
 
 
 def build(fragments: list[str]) -> None:
