@@ -22,6 +22,8 @@ from langgraph.types import Command, interrupt
 from jev_agent.jev import JevClient, JevError, JevResult, choice, noul
 
 NO_TOOL = "no_tool"
+# 위험 게이트가 거절한 도구 메시지의 접두어. 화면의 도구 카드 상태와 가드레일이 이 값을 기준으로 삼는다.
+REFUSAL_PREFIX = "실행하지 않음"
 
 
 class JevState(AgentState):
@@ -281,7 +283,7 @@ class JevRiskGateMiddleware(AgentMiddleware):
     @staticmethod
     def _refusal(request: Any, entry: dict[str, Any], reason: str) -> Command:
         message = ToolMessage(
-            content=f"실행하지 않음: {reason}",
+            content=f"{REFUSAL_PREFIX}: {reason}",
             name=request.tool_call["name"],
             tool_call_id=request.tool_call["id"],
         )

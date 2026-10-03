@@ -139,6 +139,50 @@ describe('stageLabel', () => {
 
     expect(stageLabel(timeline, [selected(['track_shipping'])])).toBe('입력을 검사하는 중')
   })
+
+  const check = (title: string, verdict: string): JevDecision => ({
+    kind: 'guardrail',
+    title,
+    verdict,
+    latency_ms: null,
+    turn: 1,
+  })
+
+  it('should say the request is being handled when the guardrail is off and no decision arrived', () => {
+    expect(stageLabel(buildTimeline([human('안녕')]), [], false)).toBe('요청을 처리하는 중')
+  })
+
+  it('should say the guardrail is off after a skipped input check', () => {
+    const decisions = [check('사용자 입력 검사', '꺼짐 → 검사 생략')]
+
+    expect(stageLabel(buildTimeline([human('안녕')]), decisions, false)).toBe(
+      '가드레일 꺼짐. 필요한 도구를 고르는 중',
+    )
+  })
+
+  it('should say the guardrail is off after a skipped tool-output check', () => {
+    const decisions = [check('도구 결과 검사: search_faq', '꺼짐 → 검사 생략')]
+
+    expect(stageLabel(buildTimeline([human('안녕')]), decisions, false)).toBe(
+      '가드레일 꺼짐. 다음 행동을 고르는 중',
+    )
+  })
+
+  it('should keep the passed label after a passed input check', () => {
+    const decisions = [check('사용자 입력 검사', '통과')]
+
+    expect(stageLabel(buildTimeline([human('안녕')]), decisions)).toBe(
+      '입력 검사 통과. 필요한 도구를 고르는 중',
+    )
+  })
+
+  it('should follow the verdict of the record, not the switch', () => {
+    const decisions = [check('사용자 입력 검사', '꺼짐 → 검사 생략')]
+
+    expect(stageLabel(buildTimeline([human('안녕')]), decisions, true)).toBe(
+      '가드레일 꺼짐. 필요한 도구를 고르는 중',
+    )
+  })
 })
 
 describe('hasAnswerStarted', () => {

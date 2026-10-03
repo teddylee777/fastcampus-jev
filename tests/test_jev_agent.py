@@ -550,3 +550,172 @@ def test_tool_results_are_not_checked_for_pii():
     from jev_agent.guardrails import TOOL_OUTPUT_QUESTIONS
 
     assert set(TOOL_OUTPUT_QUESTIONS) == {"injection"}
+
+
+# --- Risky tool output check ----------------------------------------------------
+REFUND_REQUEST = "A1002 불량이라 환불해 주세요"
+REFUND_RESULT = "주문 A1002 환불 접수 완료 (129,000원, 사유: 불량)"
+OUTPUT_CHECK_VERDICT_FAILED = "Jev 호출 실패 → 차단"
+
+
+def output_checks(state: dict) -> list[dict]:
+    return [d for d in state["jev_decisions"] if d["title"].startswith("도구 결과 검사")]
+
+
+def tool_message_of(state: dict) -> Any:
+    return next(m for m in state["messages"] if m.type == "tool")
+
+
+def injection_on_refund_result(on_result: Any, otherwise: float = 0.01):
+    """Fake injection answer that reacts only to the tool result, not to the user's request."""
+
+    def answer(state: Any) -> Any:
+        return on_result() if "환불 접수 완료" in str(state) else otherwise
+
+    return answer
+
+
+def run_refund_with_tool_output_check(on_result: Any) -> dict:
+    jev = FakeJev(injection=injection_on_refund_result(on_result), tool=REFUND_TOOL)
+    agent, _ = make_agent(jev, refund_replies())
+    return ask(agent, REFUND_REQUEST)
+
+
+def test_guardrail_checks_risky_tool_output_after_the_gate():
+    agent, _ = make_agent(FakeJev(tool=REFUND_TOOL, requested=0.97), refund_replies())
+
+    state = ask(agent, REFUND_REQUEST)
+
+    decisions = state["jev_decisions"]
+    gate_index = [d["kind"] for d in decisions].index("risk_gate")
+    assert [d["kind"] for d in decisions].count("risk_gate") == 1
+    check = decisions[gate_index + 1]
+    assert check["title"] == "도구 결과 검사: request_refund"
+    assert check["verdict"] == "통과"
+    assert check["turn"] == decisions[gate_index]["turn"]
+    assert shop.ORDERS["A1002"]["status"] == "환불접수"
+
+
+def test_guardrail_disabled_records_skip_for_risky_tool_output():
+    jev = FakeJev(tool=REFUND_TOOL, requested=0.97)
+    agent, _ = make_agent(jev, refund_replies())
+
+    state = ask(agent, REFUND_REQUEST, {"configurable": {"guardrail_enabled": False}})
+
+    (check,) = output_checks(state)
+    assert check["title"] == "도구 결과 검사: request_refund"
+    assert check["verdict"] == "꺼짐 → 검사 생략"
+    assert tool_message_of(state).content == REFUND_RESULT
+    assert all("injection" not in questions for _, questions in jev.calls)
+
+
+def test_guardrail_does_not_check_gate_refusals():
+    jev = FakeJev(tool=REFUND_TOOL, requested=0.03)
+    agent, _ = make_agent(jev, refund_replies())
+
+    state = ask(agent, "A1002 배송 완료됐나요?")
+
+    assert tool_message_of(state).content.startswith("실행하지 않음")
+    assert output_checks(state) == []
+    assert not any(set(questions) == {"injection"} for _, questions in jev.calls)
+    assert shop.ORDERS["A1002"]["status"] == "배송완료"
+
+
+def test_guardrail_replaces_flagged_risky_tool_output_with_executed_notice():
+    from jev_agent.guardrails import RISKY_TOOL_BLOCKED_TEXT
+
+    state = run_refund_with_tool_output_check(lambda: 0.99)
+
+    (check,) = output_checks(state)
+    assert tool_message_of(state).content == RISKY_TOOL_BLOCKED_TEXT
+    assert check["verdict"] == "차단: 인젝션"
+    assert shop.ORDERS["A1002"]["status"] == "환불접수"
+
+
+def test_guardrail_blocks_risky_tool_output_when_jev_fails():
+    from jev_agent.guardrails import RISKY_TOOL_BLOCKED_TEXT
+
+    def fail() -> float:
+        raise JevError("scripted failure")
+
+    state = run_refund_with_tool_output_check(fail)
+
+    (check,) = output_checks(state)
+    assert tool_message_of(state).content == RISKY_TOOL_BLOCKED_TEXT
+    assert check["verdict"] == OUTPUT_CHECK_VERDICT_FAILED
+    assert shop.ORDERS["A1002"]["status"] == "환불접수"
+
+
+def test_async_path_checks_risky_tool_output():
+    agent, _ = make_agent(FakeJev(tool=REFUND_TOOL, requested=0.97), refund_replies())
+
+    state = asyncio.run(agent.ainvoke({"messages": [{"role": "user", "content": REFUND_REQUEST}]}))
+
+    decisions = state["jev_decisions"]
+    gate_index = [d["kind"] for d in decisions].index("risk_gate")
+    assert [d["kind"] for d in decisions].count("risk_gate") == 1
+    check = decisions[gate_index + 1]
+    assert check["title"] == "도구 결과 검사: request_refund"
+    assert check["verdict"] == "통과"
+    assert check["turn"] == decisions[gate_index]["turn"]
+    assert shop.ORDERS["A1002"]["status"] == "환불접수"
+
+
+def test_guardrail_blocks_risky_tool_output_when_jev_answer_is_malformed():
+    from jev_agent.guardrails import RISKY_TOOL_BLOCKED_TEXT
+
+    def malformed() -> float:
+        raise ValueError("answer is not valid")
+
+    state = run_refund_with_tool_output_check(malformed)
+
+    (check,) = output_checks(state)
+    assert tool_message_of(state).content == RISKY_TOOL_BLOCKED_TEXT
+    assert check["verdict"] == OUTPUT_CHECK_VERDICT_FAILED
+    assert [d["kind"] for d in state["jev_decisions"]].count("risk_gate") == 1
+    assert shop.ORDERS["A1002"]["status"] == "환불접수"
+
+
+@pytest.mark.parametrize(
+    ("approved", "expected_status"), [(True, "환불접수"), (False, "배송완료")]
+)
+def test_guardrail_checks_risky_tool_output_once_after_human_decision(
+    approved: bool, expected_status: str
+):
+    agent, _ = make_agent(
+        FakeJev(tool=REFUND_TOOL, requested=0.5), refund_replies(), checkpointer=InMemorySaver()
+    )
+    config = {"configurable": {"thread_id": f"output-{approved}"}}
+
+    ask(agent, "A1002 이거 좀 별로네요", config)
+    state = agent.invoke(Command(resume={"approved": approved}), config)
+
+    checks = output_checks(state)
+    assert shop.ORDERS["A1002"]["status"] == expected_status
+    if approved:
+        gates = [d for d in state["jev_decisions"] if d["kind"] == "risk_gate"]
+        assert len(gates) == 1 and len(checks) == 1
+        assert checks[0]["title"] == "도구 결과 검사: request_refund"
+        assert checks[0]["turn"] == gates[0]["turn"]
+    else:
+        assert tool_message_of(state).content.startswith("실행하지 않음")
+        assert checks == []
+
+
+@pytest.mark.parametrize(
+    "invalid_probability",
+    ["high", False, -0.1, 1.7, float("nan")],
+    ids=["string", "bool", "negative", "above_one", "nan"],
+)
+def test_guardrail_blocks_risky_tool_output_when_injection_probability_is_invalid(
+    invalid_probability: Any,
+):
+    from jev_agent.guardrails import RISKY_TOOL_BLOCKED_TEXT
+
+    state = run_refund_with_tool_output_check(lambda: invalid_probability)
+
+    (check,) = output_checks(state)
+    assert tool_message_of(state).content == RISKY_TOOL_BLOCKED_TEXT
+    assert check["verdict"] == OUTPUT_CHECK_VERDICT_FAILED
+    assert [d["kind"] for d in state["jev_decisions"]].count("risk_gate") == 1
+    assert shop.ORDERS["A1002"]["status"] == "환불접수"

@@ -29,6 +29,8 @@ export type TimelineItem =
 
 const BLOCKED_PREFIX = '[차단됨]'
 const REFUSED_PREFIX = '실행하지 않음'
+// 서버의 DISABLED_VERDICT(jev_agent/guardrails.py, '꺼짐 → 검사 생략')와 맞춘 접두어다.
+const DISABLED_VERDICT_PREFIX = '꺼짐'
 
 export function textOf(content: Message['content']): string {
   if (typeof content === 'string') return content
@@ -98,15 +100,23 @@ export function totalLatencyMs(decisions: JevDecision[]): number {
  * 답변 글자가 나오기 전까지 사용자에게 보여 줄 진행 상태.
  * 이번 턴에 쌓인 Jev 판단과 도구 호출에서 "지금 무엇을 하는 중인지"를 읽어 낸다.
  */
-export function stageLabel(timeline: TimelineItem[], decisions: JevDecision[]): string {
+export function stageLabel(
+  timeline: TimelineItem[],
+  decisions: JevDecision[],
+  isGuardrailEnabled = true,
+): string {
   const turn = timeline.filter((item) => item.kind === 'human').length
   const running = timeline.findLast((item) => item.kind === 'tool' && item.status === 'running')
   if (running?.kind === 'tool') return `${running.name} 실행 중`
 
   const latest = decisions.filter((decision) => (decision.turn ?? 1) === turn).at(-1)
-  if (!latest) return '입력을 검사하는 중'
+  if (!latest) return isGuardrailEnabled ? '입력을 검사하는 중' : '요청을 처리하는 중'
   if (latest.kind === 'guardrail') {
-    return latest.title.startsWith('도구 결과') ? '도구 결과를 확인했습니다. 다음 행동을 고르는 중' : '입력 검사 통과. 필요한 도구를 고르는 중'
+    const isSkipped = latest.verdict.startsWith(DISABLED_VERDICT_PREFIX)
+    if (latest.title.startsWith('도구 결과')) {
+      return isSkipped ? '가드레일 꺼짐. 다음 행동을 고르는 중' : '도구 결과를 확인했습니다. 다음 행동을 고르는 중'
+    }
+    return isSkipped ? '가드레일 꺼짐. 필요한 도구를 고르는 중' : '입력 검사 통과. 필요한 도구를 고르는 중'
   }
   if (latest.kind === 'tool_select') {
     return latest.offered?.length ? `${latest.offered.join(', ')} 호출을 준비하는 중` : '답변을 작성하는 중'

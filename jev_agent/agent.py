@@ -54,7 +54,7 @@ def build_support_agent(
         tools=TOOLS,
         system_prompt=SUPPORT_SYSTEM_PROMPT,
         middleware=[
-            JevGuardrailMiddleware(jev),
+            JevGuardrailMiddleware(jev, risky_tools=RISKY_TOOLS),
             JevToolSelectorMiddleware(jev, catalog=tool_catalog(), hide_builtin_tools=True),
             JevRiskGateMiddleware(jev, risky_tools=RISKY_TOOLS),
         ],
