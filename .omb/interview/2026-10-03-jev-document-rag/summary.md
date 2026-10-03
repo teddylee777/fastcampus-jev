@@ -101,8 +101,10 @@ Alternatives and reasons are recorded only in the "Decisions and rationale" sect
 
 Revision 1 을 2026-10-03 에 사용자가 승인했다. 사용자의 답: "승인합니다!"
 
+Revision 2 (D-011, P-004 를 폴더별 질문으로 수정)를 2026-10-04 에 사용자가 승인했다. 사용자의 답: "A 로 하겠습니다."
+
 ## Next step
 
 이 기록은 ultra-goal 로드맵의 입력이다. 로드맵은 단위 하나(전체 구현)로 작성하고, 사용자 승인 뒤
-예약된 틱이 `omb-goal --unattended` 로 실행한다. 기록은 기본 체크아웃의 `main` 에 커밋되지 않은
-상태로 있으며, 기본 체크아웃에서는 `omb-pr` 이 이 기록을 제외하므로 PR 에 실리지 않는다.
+예약된 틱이 `omb-goal --unattended` 로 실행한다. 기록은 작업 트리(worktree)로 옮겨져
+`feat/jev-document-rag` 브랜치에 커밋되었고, PR #3 에 포함된다.

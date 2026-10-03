@@ -1,6 +1,6 @@
 # 문서 기반 RAG 에 Jev 적용 — 전체 정책
 
-- Status: Accepted (2026-10-03)
+- Status: Accepted (2026-10-04)
 - Revision: 2 (mirrors `revision` in `summary.md`)
 - Interview summary: ./summary.md
 - Scope: 문서 RAG 기능 전체 (문서 묶음, 검색기, RAG 그래프, 탭, 노트북, CI, 전달 방식)
@@ -299,5 +299,5 @@ Jev 호출은 질의 하나에 최대 4번이다. 앞 단계에서 종료되면 
 ## 최종 검토와 승인
 
 세 문서의 D-ID, P-ID, T-ID 가 서로 맞는지 확인했다. 불일치 판정은 모두 개발 가이드의 태스크로
-이어진다. 승인 상태의 기준은 `summary.md` 의 frontmatter 이며, 현재는 사용자 검토를 기다린다.
-문서 승인은 구현 완료를 뜻하지 않는다.
+이어진다. 승인 상태의 기준은 `summary.md` 의 frontmatter 이며, revision 2 가 2026-10-04 에
+승인되었다(`accepted_revision: 2`). 문서 승인은 구현 완료를 뜻하지 않는다.

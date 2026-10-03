@@ -1,11 +1,11 @@
 # 문서 기반 RAG 에 Jev 적용 — 변경 전용 개발 가이드
 
-- Status: Accepted (2026-10-03)
-- Revision: 1 (same reviewed revision as `policy.md` and `summary.md`)
+- Status: Accepted (2026-10-04)
+- Revision: 2 (same reviewed revision as `policy.md` and `summary.md`)
 - Interview summary: ./summary.md
 - Full policy: [Complete policy](./policy.md)
 - Applies to: `teddylee777/fastcampus-jev` 의 `main` 커밋 `e36edabb`. 이후 커밋에는 자동 적용되지 않는다
-- Acceptance: Revision 1 accepted by the user on 2026-10-03
+- Acceptance: Revision 1 accepted by the user on 2026-10-03. Revision 2 (P-004 를 폴더별 질문으로 수정, D-011) accepted on 2026-10-04
 
 ## 고정된 구현 기준선
 
@@ -23,7 +23,7 @@
 | Task | Policy / behavior | Files / artifacts | Dependencies | Placement | Completion judgment |
 |---|---|---|---|---|---|
 | T-001 | P-011: PR 과 main push 에서 ruff, 오프라인 pytest, vitest 가 돈다 | `.github/workflows/ci.yml` (제안/신규) | 없음 | 단일 PR | PR 에 체크가 붙고 초록이다 |
-| T-002 | P-001, P-002: 폴더로 나눈 문서 묶음과 결정적인 grep 검색기 | `jev_agent/rag/corpus/**` , `jev_agent/rag/corpus.py`, `jev_agent/rag/retriever.py`, `tests/test_rag_retriever.py` (모두 제안/신규) | 없음 | 단일 PR | 검색기 테스트 통과 |
+| T-002 | P-001, P-002: 폴더로 나눈 문서 묶음과 결정적인 grep 검색기 | `jev_agent/rag/documents/**`, `jev_agent/rag/corpus.py`, `jev_agent/rag/retriever.py`, `tests/test_rag_retriever.py` (모두 제안/신규) | 없음 | 단일 PR | 검색기 테스트 통과 |
 | T-003 | P-003~P-008, P-012: Jev 판단 4종과 LLM 답변이 이어지는 그래프 | `jev_agent/rag/decisions.py`, `jev_agent/rag/graph.py`, `tests/test_rag_graph.py` (제안/신규), `langgraph.json` (수정) | T-002 | 단일 PR | S-001~S-009 테스트 통과 |
 | T-004 | P-009: "문서 RAG" 탭 | `frontend/src/rag/RagTab.tsx`, `frontend/src/rag/RagTab.test.tsx` (제안/신규), `frontend/src/App.tsx`, `frontend/src/App.test.tsx` (수정) | T-003 | 단일 PR | vitest 통과, 탭이 메뉴에 보임 |
 | T-005 | P-010: 12번 노트북 실제 실행과 README 갱신 | `scripts/build_notebooks.py` 또는 새 조각 모듈, `notebooks/12-*.ipynb`, `README.md` | T-003 | 단일 PR | 노트북에 실제 출력이 저장되고 설명의 숫자와 맞음 |
@@ -65,7 +65,7 @@
 - Reproduce source: `git show e36edabb:jev_agent/tools.py`
 - Current behavior and gap: 폴더로 나뉜 문서와 파일 검색기가 없다.
 - Edit responsibilities (모두 제안/신규):
-  - `jev_agent/rag/corpus/<folder>/*.md`: 폴더 4~5개, 파일 10~12개. 각 파일은 첫 줄 `# 제목`,
+  - `jev_agent/rag/documents/<folder>/*.md`: 폴더 4~5개, 파일 10~12개. 각 파일은 첫 줄 `# 제목`,
     둘째 문단에 한 줄 요약, 그 아래 본문. 폴더마다 설명을 담는 `_folder.md` 를 둔다.
   - `jev_agent/rag/corpus.py`: 폴더와 파일 설명을 읽어 색인을 만든다. 설명이 빠진 항목은
     `ValueError` 로 알린다.
@@ -76,7 +76,7 @@
 
   ```python
   class Passage(TypedDict):
-      path: str        # corpus 기준 상대 경로
+      path: str        # DOCUMENTS_ROOT 기준 상대 경로
       line: int        # 문단 시작 줄
       text: str
 
@@ -118,8 +118,11 @@
 - Conditions, order and failure results:
   1. `select_folders`: `choice`, 옵션은 폴더 설명과 "해당 없음". 확률 0.25 이상을 최대 2개.
      없으면 종료 사유 `no_folder`.
-  2. `select_files`: `choice`, 옵션은 선택된 폴더의 파일 요약과 "해당 없음". 확률 0.2 이상을
-     최대 3개. 없으면 종료 사유 `no_file`.
+  2. `select_files`: 선택된 폴더마다 `choice` 질문을 하나씩 만들어 한 번의 Jev 호출로 보낸다
+     (P-004 revision 2, D-011). 질문마다 옵션은 그 폴더의 파일 요약과 "해당 없음"이다. 각
+     질문에서 확률 0.2 이상인 파일을 후보로 삼고, 1등이 "해당 없음"이거나 기준값을 넘는 파일이
+     없는 폴더는 후보를 내지 않는다. 모든 폴더의 후보를 확률 순으로 합쳐 최대 3개를 고른다.
+     어느 폴더에서도 파일이 나오지 않으면 종료 사유 `no_file`.
   3. `search_passages`: T-002 의 검색기. 빈 결과면 종료 사유 `no_passage`.
   4. `judge_sufficiency`: `noul`. 0.5 미만이면 종료 사유 `insufficient`.
   5. `generate_answer`: LLM. 구절만 근거로 답한다.
@@ -134,7 +137,8 @@
       "status": "answered" | "no_folder" | "no_file" | "no_passage" | "insufficient",
       "steps": [  # 실행된 순서대로
           {"kind": "folder" | "file" | "sufficiency" | "grounding",
-           "verdict": str, "probabilities": dict[str, float],
+           "verdict": str, "selected": list[str], "labels": dict[str, str],
+           "probabilities": dict[str, float],
            "threshold": float | None, "latency_ms": int, "cost": float},
       ],
       "folders": list[str], "files": list[str], "passages": list[Passage],
@@ -145,6 +149,12 @@
 
   옵션 순서 편향을 줄이기 위해 폴더와 파일 옵션은 이름 순으로 고정하고 "해당 없음"을 마지막에
   둔다. 선택은 확률 값으로만 하고 순서에 기대지 않는다.
+
+  `file` step 의 `probabilities` 는 폴더별 질문의 확률을 폴더 이름순으로 한 맵에 편 것이다. 값은
+  각 폴더 질문 안의 probability 그대로이고, 폴더별 "해당 없음"은 `none__{folder}` 키로 그 폴더의
+  마지막에 둔다. 그래서 맵 전체의 합은 1 이 아니다. `labels` 는 파일 키의 제목과 폴더별
+  "해당 없음" 라벨을 담고, `selected` 는 합쳐서 고른 파일 키다
+  (`jev_agent/rag/decisions.py::flatten_file_probabilities`, `build_file_labels`).
 - Contract consumers: `langgraph.json` 의 기존 그래프 6개는 바뀌지 않는다. 새 그래프의 소비자는
   T-004 의 탭과 T-005 의 노트북이다.
 - Documentation responsibility: T-005.
@@ -172,11 +182,13 @@
   번의 결과를 보여 주는 구조다.
 - Edit responsibilities:
   - `frontend/src/rag/RagTab.tsx` (제안/신규): 질의 입력, 예시 선택, 단계별 결과 표시.
-    `runPattern('doc_rag', { query })` 와 기존 `ProbabilityBars` 를 재사용한다.
+    `runGraph('doc_rag', { query }, isRagOutput)` 와 기존 `ProbabilityBars` 를 재사용한다.
   - `frontend/src/App.tsx` (수정): 메뉴에 "문서 RAG" 탭을 추가하고 `RagTab` 을 그린다.
 - Conditions, order and failure results: 종료 사유별 안내 문구를 보여 준다. `grounding` 이
   `supports` 가 아니면 "근거 확인 필요" 표시. 서버 오류는 기존 탭과 같은 방식.
-- Contract consumers: `runPattern` 의 시그니처는 바꾸지 않는다.
+- Contract consumers: `runPattern` 의 시그니처는 바꾸지 않는다. 호출 로직은 일반화한 `runGraph`
+  (`frontend/src/lib/langgraph.ts::runGraph`)로 옮기고 `runPattern` 은 이를 부르는 얇은 함수로
+  남긴다. `RagTab` 은 `runGraph` 를 직접 쓴다.
 - Documentation responsibility: T-005 의 README 탭 표.
 - Work order / dependencies: T-003 뒤.
 - Placement decision: 단일 PR 에 포함.
@@ -230,4 +242,4 @@
 
 - 한국어에서의 Jev 확률 분포는 T-005 실행에서 확인한다. 영향 범위는 T-003 의 기준값 상수.
 - Codex 앱 설치 여부는 로드맵 사전 점검에서 확인한다. 영향 범위는 PR 리뷰 단계.
-- 승인 상태의 기준은 `summary.md` 의 frontmatter 이며 현재 사용자 검토를 기다린다.
+- 승인 상태의 기준은 `summary.md` 의 frontmatter 이며, revision 2 가 2026-10-04 에 승인되었다.
