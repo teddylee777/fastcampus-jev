@@ -3,10 +3,10 @@ title: "문서 기반 RAG 에 Jev 적용"
 date: 2026-10-03
 language: ko
 status: accepted
-revision: 1
-accepted_revision: 1
-accepted_at: 2026-10-03
-acceptance_quote: "승인합니다!"
+revision: 2
+accepted_revision: 2
+accepted_at: 2026-10-04
+acceptance_quote: "A 로 하겠습니다."
 max_questions: 40
 questions_asked: 10
 baseline:
@@ -59,6 +59,7 @@ chunk 판정, rerank, 충분성 판단, 근거 검증에 쓰고 있었다. 회�
 | D-008 | 폴더·파일 선택 폭 | 확률 기준으로 폴더 최대 2개, 파일 최대 3개. "해당 없음"이면 검색 없이 종료 | P-003, P-004, T-003 |
 | D-009 | 노트북 완료 기준 | 실제 API 로 실행해 출력 저장, 자동 병합 | P-010, T-005 |
 | D-010 | PR 분할 | 한 번에 전부 구현. 단위 하나, PR 하나 | P-013, T-001~T-005 |
+| D-011 | 파일 선택 질문 구성 (2026-10-04, 검증 중 수정) | 선택된 폴더마다 `choice` 질문을 하나씩 만들어 한 번의 호출로 보낸다. 질문 하나로 묻던 방식은 실제 호출에서 한 파일에 확률이 몰려 S-002 를 충족하지 못했다 | P-004, S-002 |
 
 Alternatives and reasons are recorded only in the "Decisions and rationale" section of
 `policy.md`.

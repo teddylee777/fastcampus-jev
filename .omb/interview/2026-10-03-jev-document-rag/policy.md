@@ -1,12 +1,12 @@
 # 문서 기반 RAG 에 Jev 적용 — 전체 정책
 
 - Status: Accepted (2026-10-03)
-- Revision: 1 (mirrors `revision` in `summary.md`)
+- Revision: 2 (mirrors `revision` in `summary.md`)
 - Interview summary: ./summary.md
 - Scope: 문서 RAG 기능 전체 (문서 묶음, 검색기, RAG 그래프, 탭, 노트북, CI, 전달 방식)
 - Development guide: [Change-only guide](./development-guide.md)
 - Supersedes/relates to: 관련 ADR 없음
-- Acceptance: Revision 1 accepted by the user on 2026-10-03
+- Acceptance: Revision 1 accepted by the user on 2026-10-03. Revision 2 (P-004 를 폴더별 질문으로 수정) accepted on 2026-10-04
 
 ## 목적과 개념
 
@@ -127,14 +127,18 @@ Jev 호출은 질의 하나에 최대 4번이다. 앞 단계에서 종료되면 
 
 ### P-004 — Jev 의 파일 선택
 
-- Rule: 선택된 폴더들의 파일 제목과 요약을 Jev 에 보내 `choice` 로 파일을 고른다. 옵션에 "해당
-  없음"을 넣는다. 확률이 기준값 이상인 파일을 확률 순으로 최대 3개까지 고른다.
-- Exceptions and failures: 1등이 "해당 없음"이거나 기준값을 넘는 파일이 없으면 "문서에 없는
-  내용"으로 끝낸다.
+- Rule: 선택된 폴더마다 그 폴더의 파일 제목과 요약으로 `choice` 질문을 하나씩 만들어 한 번의 Jev
+  호출로 보낸다. 질문마다 옵션에 "해당 없음"을 넣는다. 각 질문에서 확률이 기준값 이상인 파일을
+  후보로 삼고, 모든 폴더의 후보를 확률 순으로 최대 3개까지 고른다.
+- Exceptions and failures: 한 폴더의 질문에서 1등이 "해당 없음"이거나 기준값을 넘는 파일이 없으면
+  그 폴더는 파일을 내지 않는다. 어느 폴더에서도 파일이 나오지 않으면 "문서에 없는 내용"으로
+  끝낸다.
 - Defaults, limits and applicability: 기준값의 시작값은 0.2 다.
 - Related rules: P-002, P-003, P-012
-- Provenance: 회의 결정 D-005, D-008
-- Key reason and decision: P-003 과 같다.
+- Provenance: 회의 결정 D-005, D-008, D-011 (2026-10-04 수정)
+- Key reason and decision: P-003 과 같다. 처음에는 선택된 폴더의 파일 전체를 질문 하나로 물었으나,
+  실제 호출에서 `choice` 가 한 파일에 확률을 몰아주어(0.98 대 0.01) 두 폴더에 걸친 질의가 한쪽
+  파일만 검색했다(S-002 미충족). 폴더별 질문은 폴더 안의 파일끼리만 확률을 나눈다.
 
 ### P-005 — 충분성 판단
 
