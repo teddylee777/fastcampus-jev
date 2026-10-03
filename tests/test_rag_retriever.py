@@ -14,12 +14,7 @@ from jev_agent.rag.corpus import (
 )
 from jev_agent.rag.decisions import MAX_PASSAGE_CHARS
 from jev_agent.rag.retriever import read_paragraphs, search_passages, tokenize_query
-
-
-def doc(title: str, summary: str, *paragraphs: str) -> str:
-    """A document in the corpus format: title, summary paragraph, then body paragraphs."""
-    blocks = [f"# {title}", summary, *paragraphs]
-    return "\n\n".join(blocks) + "\n"
+from tests.fakes import doc
 
 
 def write_corpus(root: Path, layout: dict[str, dict[str, str]]) -> Path:
@@ -273,6 +268,16 @@ def test_read_paragraphs_skips_title_and_rejects_unknown_path(tmp_path):
     assert [(p["line"], p["text"]) for p in paragraphs] == [(3, "요약입니다."), (5, "본문입니다.")]
     with pytest.raises(ValueError, match="shipping/zzz.md"):
         read_paragraphs(index, "shipping/zzz.md")
+
+
+def test_read_paragraphs_file_missing_on_disk_raises_value_error_naming_relative_path(tmp_path):
+    index = make_index(tmp_path, {"shipping/a.md": doc("제목", "요약입니다.", "본문입니다.")})
+    (tmp_path / "shipping" / "a.md").unlink()
+
+    with pytest.raises(ValueError, match="shipping/a.md") as raised:
+        read_paragraphs(index, "shipping/a.md")
+
+    assert str(tmp_path) not in str(raised.value)
 
 
 # --- real corpus ----------------------------------------------------------------

@@ -6,6 +6,7 @@ Jev 와 LLM 호출은 서버에서만 한다. API 키가 브라우저로 나가�
 
 from __future__ import annotations
 
+import asyncio
 import functools
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -214,9 +215,9 @@ def build_generate_answer_node(deps: RagDeps):
             response = await deps.llm.ainvoke(
                 [("system", ANSWER_SYSTEM_PROMPT), ("user", user_message)]
             )
+            content = response.content
         except Exception as exc:  # noqa: BLE001 - 메시지에 요청 내용이 섞일 수 있어 종류만 알린다.
             return {"output": None, "error": f"{ANSWER_ERROR} ({type(exc).__name__})"}
-        content = response.content
         if not isinstance(content, str) or not content.strip():
             return {"output": None, "error": f"{ANSWER_ERROR} (빈 응답)"}
         answer = content.strip()
@@ -305,7 +306,10 @@ def build_doc_rag_graph(
     root: Path | None = None,
     checkpointer: Any = None,
 ):
-    """doc_rag 그래프를 만든다. 문서 색인은 만들 때 한 번 읽는다."""
+    """doc_rag 그래프를 만든다. 폴더·파일 설명 색인은 만들 때마다 디스크에서 읽고, 본문은 검색 때 읽는다.
+
+    디렉터리를 훑는 동기 호출이 들어 있으므로 이벤트 루프 위에서 직접 부르지 않는다.
+    """
     load_dotenv()
     client = jev or JevClient()
     if llm is None:
@@ -358,5 +362,9 @@ def build_doc_rag_graph(
     return graph.compile(name="jev-doc-rag", checkpointer=checkpointer)
 
 
-def make_doc_rag():
-    return build_doc_rag_graph()
+async def make_doc_rag():
+    """langgraph.json 에 등록된 팩토리. 서버는 그래프에 접근할 때마다 이 코루틴을 이벤트 루프에서 await 한다.
+
+    색인 스캔(디렉터리 순회)을 스레드로 넘겨 서버의 blocking 감시(blockbuster)에 걸리지 않게 한다.
+    """
+    return await asyncio.to_thread(build_doc_rag_graph)

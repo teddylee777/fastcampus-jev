@@ -64,7 +64,10 @@ def _require_known_path(index: CorpusIndex, path: str) -> None:
 def read_paragraphs(index: CorpusIndex, path: str) -> list[Passage]:
     """색인에 있는 문서 하나를 문단 단위 구절로 돌려준다."""
     _require_known_path(index, path)
-    text = (Path(index["root"]) / path).read_text(encoding="utf-8")
+    try:
+        text = (Path(index["root"]) / path).read_text(encoding="utf-8")
+    except OSError as exc:  # 색인을 만든 뒤 파일이 지워지거나 권한이 바뀐 경우
+        raise ValueError(f"문서를 읽지 못했습니다: {path}") from exc
     return [{"path": path, "line": line, "text": body} for line, body in split_paragraphs(text)]
 
 

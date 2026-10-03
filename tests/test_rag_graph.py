@@ -23,26 +23,10 @@ from jev_agent.rag.decisions import (
     SUFFICIENCY_THRESHOLD,
 )
 from jev_agent.rag.graph import ANSWER_SYSTEM_PROMPT, build_doc_rag_graph
+from tests.fakes import ScriptedJev, doc
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ANSWER_TEXT = "배송비는 3천 원입니다."
-
-
-class ScriptedJev:
-    """Answers each question from a {name: answer} script and records what it was asked."""
-
-    def __init__(self, answers: dict[str, dict[str, Any]], default: dict[str, Any] | None = None):
-        self.answers = answers
-        self.default = default
-        self.calls: list[tuple[Any, dict]] = []
-
-    def decide(self, state: Any, questions: dict) -> JevResult:
-        self.calls.append((state, questions))
-        answers = {name: self.answers.get(name, self.default) for name in questions}
-        return JevResult(answers=answers, usage={"cost": 0.00001}, latency_ms=10.0)
-
-    async def adecide(self, state: Any, questions: dict) -> JevResult:
-        return self.decide(state, questions)
 
 
 class FailingJev(ScriptedJev):
@@ -125,10 +109,6 @@ def happy_answers() -> dict[str, dict[str, Any]]:
         "sufficient": noul_answer(0.9),
         "grounding": grounding_answer(),
     }
-
-
-def doc(title: str, summary: str, *paragraphs: str) -> str:
-    return "\n\n".join([f"# {title}", summary, *paragraphs]) + "\n"
 
 
 @pytest.fixture
@@ -734,3 +714,67 @@ def test_doc_rag_run_after_error_run_on_same_thread_is_clean(corpus_root):
     assert second["error"] is None
     assert second["output"]["status"] == "answered"
     assert len(second["output"]["steps"]) == 4
+
+
+# --- unreadable corpus file and malformed LLM response ---------------------------------
+def test_doc_rag_corpus_file_removed_after_indexing_reports_error(corpus_root):
+    jev, llm = ScriptedJev(happy_answers()), FakeAnswerLLM()
+    graph = build_graph(corpus_root, jev, llm)
+    (corpus_root / "shipping" / "delivery_fee.md").unlink()
+
+    state = run_graph(graph, {"query": "배송비는 얼마인가요?"})
+
+    assert state["output"] is None
+    assert "shipping/delivery_fee.md" in state["error"]
+    assert str(corpus_root) not in state["error"]
+    assert len(jev.calls) == 2
+    assert llm.calls == []
+
+
+def test_doc_rag_llm_response_without_content_reports_error(corpus_root):
+    class ContentlessLLM(FakeAnswerLLM):
+        async def ainvoke(self, messages):
+            self.calls.append(messages)
+            return "plain string, not a message"
+
+    jev, llm = ScriptedJev(happy_answers()), ContentlessLLM()
+    graph = build_graph(corpus_root, jev, llm)
+
+    state = run_graph(graph, {"query": "배송비는 얼마인가요?"})
+
+    assert state["output"] is None
+    assert "답변 생성" in state["error"]
+    assert "AttributeError" in state["error"]
+    assert len(jev.calls) == 3
+
+
+# --- server loading --------------------------------------------------------------------
+@pytest.fixture
+def server_blockbuster():
+    """The blockbuster configuration `langgraph dev` turns on, switched off again afterwards."""
+    from langgraph_runtime_inmem.queue import _enable_blockbuster
+
+    blockbuster = _enable_blockbuster()
+    yield blockbuster
+    blockbuster.deactivate()
+
+
+def test_registered_doc_rag_factory_does_not_block_the_event_loop(
+    server_blockbuster, monkeypatch
+):
+    from langgraph_api.asyncio import as_asynccontextmanager
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    registered = json.loads((REPO_ROOT / "langgraph.json").read_text(encoding="utf-8"))["graphs"][
+        "doc_rag"
+    ]
+    factory = getattr(rag_graph, registered.rsplit(":", 1)[1])
+
+    async def load_like_the_server():
+        value = factory()  # the server calls the factory on its event loop, then awaits the result
+        async with as_asynccontextmanager(value) as graph:
+            return graph
+
+    graph = asyncio.run(load_like_the_server())
+
+    assert graph.name == "jev-doc-rag"
