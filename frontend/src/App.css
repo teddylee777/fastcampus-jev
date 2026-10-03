@@ -348,3 +348,10 @@ button.primary:hover:not(:disabled) { background: var(--accent); opacity: 0.85; 
   .row-tool { padding-left: 0; }
   .topbar { flex-wrap: wrap; }
 }
+
+/* 문서 RAG 탭 */
+.rag-status { font-size: 13px; color: var(--muted); }
+.rag-status:empty { margin-top: 0; }
+.rag-passages { display: grid; gap: 8px; }
+.rag-passage-source { font-size: 12px; font-weight: 600; color: var(--muted); overflow-wrap: anywhere; }
+.rag-passage-text, .rag-answer { font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }

@@ -122,6 +122,19 @@ describe('App', () => {
 
     await user.keyboard('{ArrowUp}{ArrowUp}')
 
-    expect(screen.getByRole('tab', { name: '브라우저 액션' })).toHaveFocus()
+    expect(screen.getByRole('tab', { name: '문서 RAG' })).toHaveFocus()
+  })
+
+  it('should switch to the document RAG tab on click', async () => {
+    const user = userEvent.setup()
+    renderApp()
+
+    await user.click(screen.getByRole('tab', { name: '문서 RAG' }))
+
+    expect(screen.getByRole('tab', { name: '문서 RAG' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('heading', { level: 1, name: '문서 RAG' })).toBeVisible()
+    expect(screen.getByRole('button', { name: '문서에서 찾기' })).toBeInTheDocument()
+    expect(document.getElementById('panel-doc-rag')).toHaveAttribute('aria-labelledby', 'tab-doc-rag')
+    expect(document.getElementById('panel-chat')).toHaveAttribute('hidden')
   })
 })

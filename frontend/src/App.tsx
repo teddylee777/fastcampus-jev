@@ -2,13 +2,16 @@ import { useRef, useState, type KeyboardEvent } from 'react'
 import { ChatTab } from './chat/ChatTab'
 import { PatternTab } from './patterns/PatternTab'
 import { PATTERNS } from './patterns/config'
+import { RagTab } from './rag/RagTab'
 import './App.css'
 
 const CHAT_TAB = 'chat'
+const RAG_TAB = 'doc-rag'
 const REPO_URL = 'https://github.com/teddylee777/fastcampus-jev'
 const TABS = [
   { id: CHAT_TAB, title: '고객지원 에이전트', group: '샘플 프로젝트' },
   ...PATTERNS.map((pattern) => ({ id: pattern.id, title: pattern.title, group: pattern.group })),
+  { id: RAG_TAB, title: '문서 RAG', group: 'RAG' },
 ]
 const KEY_STEP: Record<string, number> = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }
 
@@ -104,6 +107,16 @@ export default function App() {
             <PatternTab config={pattern} />
           </div>
         ))}
+        {activeTab === RAG_TAB && (
+          <div
+            role="tabpanel"
+            id={`panel-${RAG_TAB}`}
+            aria-labelledby={`tab-${RAG_TAB}`}
+            className="tabpanel"
+          >
+            <RagTab />
+          </div>
+        )}
       </main>
     </div>
   )
