@@ -15,7 +15,7 @@ from typing import Any, Literal
 from dotenv import load_dotenv
 from langgraph.graph import END, START, StateGraph
 
-from jev_agent.jev import JevClient, JevError
+from jev_agent.jev import JevClient, JevError, JevResult
 from jev_agent.pattern_graphs import PatternState
 from jev_agent.patterns.view import require_text
 from jev_agent.rag.corpus import DOCUMENTS_ROOT, CorpusIndex, load_corpus_index
@@ -88,6 +88,18 @@ def catch_step_errors(node: RagNode) -> RagNode:
     return wrapper
 
 
+async def ask_jev(jev: JevClient, state: Any, questions: dict[str, dict[str, Any]]) -> JevResult:
+    """adecide 를 부르되, 응답 본문의 모양이 틀려 생기는 파싱 예외만 ValueError 로 바꾼다.
+
+    JSON 본문이 객체가 아니면 JevClient 가 TypeError 를 낸다. 노드 코드의 진짜 버그까지
+    가리지 않도록 catch_step_errors 가 아니라 이 호출 한 곳에서만 좁게 바꾼다.
+    """
+    try:
+        return await jev.adecide(state, questions)
+    except (TypeError, AttributeError, KeyError) as exc:
+        raise ValueError("Jev 응답의 형식이 올바르지 않습니다.") from exc
+
+
 def _offered_keys(questions: dict[str, dict[str, Any]], name: str) -> list[str]:
     return list(questions[name]["criteria"])
 
@@ -102,7 +114,7 @@ def build_select_folders_node(deps: RagDeps):
         payload = require_mapping(state.get("payload"), "'payload' 는 객체여야 합니다.")
         query = require_text(dict(payload), "query")
         question_state, questions = build_folder_question(deps.index, query)
-        result = await deps.jev.adecide(question_state, questions)
+        result = await ask_jev(deps.jev, question_state, questions)
         probabilities = read_probabilities(
             read_answer(result, "folder"), _offered_keys(questions, "folder")
         )
@@ -133,7 +145,7 @@ def build_select_files_node(deps: RagDeps):
         question_state, questions = build_file_question(
             deps.index, state["folders"], state["query"]
         )
-        result = await deps.jev.adecide(question_state, questions)
+        result = await ask_jev(deps.jev, question_state, questions)
         offered = _offered_keys(questions, "file")
         probabilities = read_probabilities(read_answer(result, "file"), offered)
         keys = select_labels(probabilities, FILE_THRESHOLD, MAX_FILES)
@@ -165,7 +177,7 @@ def build_search_passages_node(deps: RagDeps):
 def build_judge_sufficiency_node(deps: RagDeps):
     async def judge_sufficiency(state: RagState) -> dict[str, Any]:
         question_state, questions = build_sufficiency_question(state["query"], state["passages"])
-        result = await deps.jev.adecide(question_state, questions)
+        result = await ask_jev(deps.jev, question_state, questions)
         probability = read_noul(read_answer(result, "sufficient"))
         is_sufficient = probability >= SUFFICIENCY_THRESHOLD
         step = build_step(
@@ -209,7 +221,7 @@ def build_generate_answer_node(deps: RagDeps):
 def build_verify_grounding_node(deps: RagDeps):
     async def verify_grounding(state: RagState) -> dict[str, Any]:
         question_state, questions = build_grounding_question(state["answer"], state["passages"])
-        result = await deps.jev.adecide(question_state, questions)
+        result = await ask_jev(deps.jev, question_state, questions)
         verdict, probabilities = read_grounding(read_answer(result, "grounding"))
         step = build_step("grounding", verdict, [verdict], probabilities, None, result)
         return {"steps": [*state["steps"], step], "grounding": verdict, "status": "answered"}

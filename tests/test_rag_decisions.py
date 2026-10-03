@@ -180,8 +180,16 @@ def test_read_answer_returns_named_answer_or_none_for_missing_name():
 
 @pytest.mark.parametrize(
     "usage",
-    [None, [], {"cost": None}, {"cost": "0.1"}, {"cost": True}, {"cost": float("nan")}],
-    ids=["none", "list", "cost_none", "cost_str", "cost_bool", "cost_nan"],
+    [
+        None,
+        [],
+        {"cost": None},
+        {"cost": "0.1"},
+        {"cost": True},
+        {"cost": float("nan")},
+        {"cost": 10**400},
+    ],
+    ids=["none", "list", "cost_none", "cost_str", "cost_bool", "cost_nan", "cost_unrepresentable"],
 )
 def test_build_step_validates_usage_cost(usage):
     result = JevResult(answers={}, usage=usage, latency_ms=12.4)

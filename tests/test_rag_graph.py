@@ -7,12 +7,13 @@ import json
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
 import jev_agent.rag.graph as rag_graph
-from jev_agent.jev import JevError, JevResult
+from jev_agent.jev import JevClient, JevError, JevResult
 from jev_agent.rag.decisions import (
     FILE_THRESHOLD,
     FOLDER_THRESHOLD,
@@ -496,6 +497,39 @@ def test_doc_rag_malformed_jev_usage_reports_error(corpus_root, usage):
     assert state["output"] is None
     assert state["error"]
     assert len(jev.calls) == 1
+    assert llm.calls == []
+
+
+def real_jev_client(body: Any) -> JevClient:
+    """A real JevClient whose HTTP layer returns `body` as JSON with status 200; no network."""
+    payload = json.dumps(body).encode()
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, content=payload))
+    return JevClient(api_key="test-key", async_transport=transport)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [["answers"], "answers", None, 3],
+    ids=["list_with_answers_word", "string_with_answers_word", "null", "number"],
+)
+def test_doc_rag_non_object_jev_body_reports_error(corpus_root, body):
+    graph = build_doc_rag_graph(jev=real_jev_client(body), llm=FakeAnswerLLM(), root=corpus_root)
+
+    state = run_graph(graph, {"query": "배송비는 얼마인가요?"})
+
+    assert state["output"] is None
+    assert state["error"]
+
+
+def test_doc_rag_unrepresentable_usage_cost_in_real_response_reports_error(corpus_root):
+    body = {"answers": {"folder": happy_answers()["folder"]}, "usage": {"cost": 10**400}}
+    llm = FakeAnswerLLM()
+    graph = build_doc_rag_graph(jev=real_jev_client(body), llm=llm, root=corpus_root)
+
+    state = run_graph(graph, {"query": "배송비는 얼마인가요?"})
+
+    assert state["output"] is None
+    assert "usage.cost" in state["error"]
     assert llm.calls == []
 
 

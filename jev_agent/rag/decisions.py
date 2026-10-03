@@ -153,11 +153,23 @@ def select_labels(probabilities: dict[str, float], threshold: float, limit: int)
     return [key for key, value in ranked if key != NONE_OPTION and value >= threshold][:limit]
 
 
+def _finite_float(value: Any) -> float | None:
+    """유한한 float 로 바꿀 수 있는 숫자만 돌려준다. bool·비숫자·nan·inf·10**400 같은 큰 정수는 None."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    return number if math.isfinite(number) else None
+
+
 def _read_cost(usage: Any) -> float:
     cost = require_mapping(usage, "Jev 응답의 usage 가 객체가 아닙니다.").get("cost", 0.0)
-    if isinstance(cost, bool) or not isinstance(cost, int | float) or not math.isfinite(cost):
+    number = _finite_float(cost)
+    if number is None:
         raise ValueError("Jev 응답의 usage.cost 는 유한한 숫자여야 합니다.")
-    return float(cost)
+    return number
 
 
 def build_step(
